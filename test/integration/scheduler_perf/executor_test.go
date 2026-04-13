@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	schedulinglisters "k8s.io/client-go/listers/scheduling/v1alpha2"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	v1 "k8s.io/api/core/v1"
@@ -431,7 +433,7 @@ func (mc *mockDataCollector) init() error {
 func (mc *mockDataCollector) run(_ ktesting.TContext) {}
 
 // collect always returns DataItems defined in the collector.
-func (mc *mockDataCollector) collect() []DataItem {
+func (mc *mockDataCollector) collect(_ ktesting.TContext) []DataItem {
 	return mc.dataItems
 }
 
@@ -625,7 +627,7 @@ func TestMetricThreshold(t *testing.T) {
 
 			originalGetTestDataCollectors := getTestDataCollectors
 			defer func() { getTestDataCollectors = originalGetTestDataCollectors }()
-			getTestDataCollectors = func(_ coreinformers.PodInformer, _ string, _ []string, _ map[string]string, _ *metricsCollectorConfig, _ float64) []testDataCollector {
+			getTestDataCollectors = func(_ coreinformers.PodInformer, _ coreinformers.EventInformer, _ schedulinglisters.PodGroupLister, _ string, _ []string, _ map[string]string, _ *metricsCollectorConfig, _ float64) []testDataCollector {
 				return []testDataCollector{&mockDataCollector{dataItems: tc.dataItems}}
 			}
 
