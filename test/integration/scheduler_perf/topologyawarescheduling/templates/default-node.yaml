@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Node
+metadata:
+  generateName: scheduler-perf-
+  labels:
+    slice-4: {{DivideInt .Index 4}}
+    slice-8: {{DivideInt .Index 8}}
+    slice-16: {{DivideInt .Index 16}}
+    slice-32: {{DivideInt .Index 32}}
+    slice-64: {{DivideInt .Index 64}}
+    slice-128: {{DivideInt .Index 128}}
+    slice-256: {{DivideInt .Index 256}}
+spec: {}
+status:
+  capacity:
+    pods: "110"
+    cpu: "4"
+    memory: 32Gi
+  conditions:
+    - status: "True"
+      type: Ready
+  phase: Running

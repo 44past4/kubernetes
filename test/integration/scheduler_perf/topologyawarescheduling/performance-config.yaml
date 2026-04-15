@@ -1,0 +1,52 @@
+# The following labels are used in this file.
+#
+# - integration-test: test cases to run as the integration test.
+# - performance: test cases to run in the performance test.
+# - short: supplemental label meaning short execution time.
+
+- name: GangScheduling
+  featureGates:
+    GenericWorkload: true
+    GangScheduling: true
+    OpportunisticBatching: true
+    TopologyAwareWorkloadScheduling: true
+  workloadTemplate:
+  - opcode: createNodes
+    countParam: $initNodes
+    nodeTemplatePath: templates/default-node.yaml
+  - opcode: createNamespaces
+    prefix: gang
+    count: 1
+  - opcode: createAny
+    # Create one pod groups (gangs), each has a min count policy specified in pod group template.
+    # Each pod group is named gang-0, gang-1, ... gang-(n-1).
+    countParam: $initPodGroups
+    namespace: gang-0
+    templatePath: templates/podgroup.yaml
+    templateParams:
+      GangSize: 16
+  - opcode: createPods
+    # Create pods with reference the pod groups (gangs) according to their indicies (e.g., pods 0-2 → gang-0, pods 3-5 → gang-1, etc..).
+    countParam: $measurePods
+    namespace: gang-0
+    podTemplatePath: templates/gang-pod.yaml
+    collectMetrics: true
+  workloads:
+  - name: 2048Nodes_128Gangs
+    labels: [performance]
+    params:
+      initNodes: 2048
+      initPodGroups: 128
+      measurePods: 2048
+  - name: 8192Nodes_512Gangs
+    labels: [performance]
+    params:
+      initNodes: 8192
+      initPodGroups: 512
+      measurePods: 8192
+  - name: 32768Nodes_4096Gangs
+    labels: [performance]
+    params:
+      initNodes: 32768
+      initPodGroups: 4096
+      measurePods: 32768
