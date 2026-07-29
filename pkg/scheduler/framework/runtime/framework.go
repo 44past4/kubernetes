@@ -1294,9 +1294,12 @@ func (f *frameworkImpl) RunFilterPluginsWithNominatedPods(ctx context.Context, s
 	// the nominated pods are treated as not running. We can't just assume the
 	// nominated pods are running because they are not running right now and in fact,
 	// they may end up getting scheduled to a different node.
-	logger := klog.FromContext(ctx)
-	logger = klog.LoggerWithName(logger, "FilterWithNominatedPods")
-	ctx = klog.NewContext(ctx, logger)
+	// Enriching the logger with a name allocates a new logger and context per
+	// invocation. This runs once per node in the parallel filter loop, so only
+	// pay for it when the enriched name would actually be emitted (V(4)+).
+	if l := klog.FromContext(ctx).V(4); l.Enabled() {
+		ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "FilterWithNominatedPods"))
+	}
 	for i := 0; i < 2; i++ {
 		stateToUse := state
 		nodeInfoToUse := info
