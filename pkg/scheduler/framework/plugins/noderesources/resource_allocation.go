@@ -259,9 +259,38 @@ func (r *resourceAllocationScorer) calculatePodResourceRequest(pod *v1.Pod, reso
 }
 
 func (r *resourceAllocationScorer) calculatePodResourceRequestList(pod *v1.Pod, resources []config.ResourceSpec) []int64 {
+	opts := resourcehelper.PodResourcesOptions{
+		UseStatusResources: r.enableInPlacePodVerticalScaling,
+		InPlacePodLevelResourcesVerticalScalingEnabled: r.enableInPlacePodLevelResourcesVerticalScaling,
+		// SkipPodLevelResources is set to false when PodLevelResources feature is enabled.
+		SkipPodLevelResources: !r.enablePodLevelResources,
+	}
+
+	if !r.useRequested {
+		opts.NonMissingContainerRequests = v1.ResourceList{
+			v1.ResourceCPU:    *resource.NewMilliQuantity(schedutil.DefaultMilliCPURequest, resource.DecimalSI),
+			v1.ResourceMemory: *resource.NewQuantity(schedutil.DefaultMemoryRequest, resource.DecimalSI),
+		}
+	}
+
+	// Aggregate the pod's requests once and read each requested resource out of
+	// the result, rather than calling PodRequests once per resource. The
+	// aggregation walks every container and builds a ResourceList map, so doing
+	// it per-resource (twice for the default cpu+memory strategy) was a large
+	// source of Score-phase heap churn under TAS placement scheduling. The opts
+	// and per-resource extraction are identical to calculatePodResourceRequest,
+	// so the returned values are unchanged.
+	requests := resourcehelper.PodRequests(pod, opts)
+
 	podRequests := make([]int64, len(resources))
 	for i := range resources {
-		podRequests[i] = r.calculatePodResourceRequest(pod, v1.ResourceName(resources[i].Name))
+		resourceName := v1.ResourceName(resources[i].Name)
+		quantity := requests[resourceName]
+		if resourceName == v1.ResourceCPU {
+			podRequests[i] = quantity.MilliValue()
+		} else {
+			podRequests[i] = quantity.Value()
+		}
 	}
 	return podRequests
 }
