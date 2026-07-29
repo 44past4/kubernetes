@@ -708,7 +708,12 @@ func Fits(pod *v1.Pod, nodeInfo fwk.NodeInfo, draManager fwk.SharedDRAManager, o
 }
 
 func fitsRequest(podRequest *preFilterState, nodeInfo fwk.NodeInfo, ignoredExtendedResources, ignoredResourceGroups sets.Set[string], draManager fwk.SharedDRAManager, opts ResourceRequestsOptions, pod *v1.Pod) []InsufficientResource {
-	insufficientResources := make([]InsufficientResource, 0, 4)
+	// Allocate lazily: the common case is that the node fits, leaving this slice
+	// empty. Pre-sizing it allocated a backing array per node for nothing, which
+	// dominated Filter-phase heap churn under TAS placement scheduling. append
+	// grows it only on the (rarer) not-fit path; callers test len() != 0, so a
+	// nil return is equivalent to an empty slice.
+	var insufficientResources []InsufficientResource
 
 	allowedPodNumber := nodeInfo.GetAllocatable().GetAllowedPodNumber()
 	if len(nodeInfo.GetPods())+1 > allowedPodNumber {
