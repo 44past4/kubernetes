@@ -1173,6 +1173,11 @@ const (
 	// When enabled, scheduler will try various placements for a pod group and pick the best one.
 	TopologyAwareWorkloadScheduling featuregate.Feature = "TopologyAwareWorkloadScheduling"
 
+	// owner: @44past4
+	//
+	// Enables optimization for topology-aware scheduling of composite pod groups with identical children.
+	TopologyAwareCompositePodGroupOptimization featuregate.Feature = "TopologyAwareCompositePodGroupOptimization"
+
 	// owner: @PiotrProkop
 	// kep: https://kep.k8s.io/3545
 	//
@@ -2114,6 +2119,10 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 		{Version: version.MustParse("1.36"), Default: false, PreRelease: featuregate.Alpha},
 	},
 
+	TopologyAwareCompositePodGroupOptimization: {
+		{Version: version.MustParse("1.37"), Default: false, PreRelease: featuregate.Alpha},
+	},
+
 	TopologyManagerPolicyAlphaOptions: {
 		{Version: version.MustParse("1.26"), Default: false, PreRelease: featuregate.Alpha},
 	},
@@ -2738,7 +2747,8 @@ var defaultKubernetesFeatureGateDependencies = map[featuregate.Feature][]feature
 
 	TaintTolerationComparisonOperators: {},
 
-	TopologyAwareWorkloadScheduling: {GenericWorkload},
+	TopologyAwareWorkloadScheduling:            {GenericWorkload},
+	TopologyAwareCompositePodGroupOptimization: {TopologyAwareWorkloadScheduling, CompositePodGroup},
 
 	TopologyManagerPolicyAlphaOptions: {},
 

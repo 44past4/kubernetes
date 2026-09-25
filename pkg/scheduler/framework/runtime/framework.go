@@ -518,7 +518,7 @@ func NewFramework(ctx context.Context, r Registry, profile *config.KubeScheduler
 		}
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.OpportunisticBatching) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.OpportunisticBatching) || utilfeature.DefaultFeatureGate.Enabled(features.TopologyAwareCompositePodGroupOptimization) {
 		f.computeBatchablePlugins()
 	}
 

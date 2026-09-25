@@ -22,14 +22,20 @@ import (
 	v1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingapi "k8s.io/api/scheduling/v1beta1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	configv1 "k8s.io/kube-scheduler/config/v1"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler"
+	configtesting "k8s.io/kubernetes/pkg/scheduler/apis/config/testing"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/interpodaffinity"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/podtopologyspread"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	stepsframework "k8s.io/kubernetes/test/integration/scheduler/podgroup/stepsframework"
 	testutils "k8s.io/kubernetes/test/integration/util"
+	"k8s.io/utils/ptr"
 )
 
 func makeNodeWithLabels(nodeName string, labels map[string]string) *v1.Node {
@@ -2018,6 +2024,240 @@ func runCPGTestScenario(t *testing.T, tt scenario) {
 	testCtx := testutils.InitTestSchedulerWithNS(t, "cpg-tas",
 		scheduler.WithPodMaxBackoffSeconds(0),
 		scheduler.WithPodInitialBackoffSeconds(0))
+	ns := testCtx.NS.Name
+
+	if err := stepsframework.RunSteps(testCtx, t, ns, tt.steps); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func makeLargeLabeledPod(podName, podGroupName string) *v1.Pod {
+	pod := makeLargePod(podName, podGroupName)
+	pod.Labels = map[string]string{"podgroup": podGroupName}
+	return pod
+}
+
+func TestCPGTopologyAwareScheduling_Optimization(t *testing.T) {
+	tests := []scenario{
+		{
+			name: "optimized scheduling with 2 identical children across racks",
+			steps: []stepsframework.Step{
+				{
+					Name: "Create nodes in 2 racks, each node with 2 CPU available",
+					CreateNodes: []*v1.Node{
+						makeNode("node1-z1-r1", "rack-1", "zone-1"),
+						makeNode("node2-z1-r1", "rack-1", "zone-1"),
+						makeNode("node3-z1-r2", "rack-2", "zone-1"),
+						makeNode("node4-z1-r2", "rack-2", "zone-1"),
+					},
+				},
+				{
+					Name:                    "Create the root CompositePodGroup object (Gang with minGroupCount=2, no topology constraint)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-root", "", "", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg1 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg1", "cpg-root", "rack", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg2 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg2", "cpg-root", "rack", 2),
+				},
+				{
+					Name: "Create identical pods belonging to pg1 and pg2 (with distinct podgroup labels), each pod requiring 2 CPU",
+					CreatePods: []*v1.Pod{
+						makeLargeLabeledPod("p1", "pg1"),
+						makeLargeLabeledPod("p2", "pg1"),
+						makeLargeLabeledPod("p3", "pg2"),
+						makeLargeLabeledPod("p4", "pg2"),
+					},
+				},
+				{
+					Name:                 "Verify all pods in the composite group are scheduled",
+					WaitForPodsScheduled: []string{"p1", "p2", "p3", "p4"},
+				},
+				{
+					Name: "Verify pg1 scheduled on one rack and pg2 scheduled on the other rack",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p1", "p2", "p3", "p4"},
+						Nodes: sets.New("node1-z1-r1", "node2-z1-r1", "node3-z1-r2", "node4-z1-r2"),
+					},
+				},
+			},
+		},
+		{
+			name: "optimized scheduling with 3 identical children across racks",
+			steps: []stepsframework.Step{
+				{
+					Name: "Create nodes in 3 racks, each node with 2 CPU available",
+					CreateNodes: []*v1.Node{
+						makeNode("node1-z1-r1", "rack-1", "zone-1"),
+						makeNode("node2-z1-r1", "rack-1", "zone-1"),
+						makeNode("node3-z1-r2", "rack-2", "zone-1"),
+						makeNode("node4-z1-r2", "rack-2", "zone-1"),
+						makeNode("node5-z1-r3", "rack-3", "zone-1"),
+						makeNode("node6-z1-r3", "rack-3", "zone-1"),
+					},
+				},
+				{
+					Name:                    "Create the root CompositePodGroup object (Gang with minGroupCount=3, no topology constraint)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-root", "", "", 3),
+				},
+				{
+					Name:           "Create child PodGroup pg1 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg1", "cpg-root", "rack", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg2 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg2", "cpg-root", "rack", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg3 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg3", "cpg-root", "rack", 2),
+				},
+				{
+					Name: "Create identical pods belonging to pg1, pg2, and pg3, each requiring 2 CPU",
+					CreatePods: []*v1.Pod{
+						makeLargeLabeledPod("p1", "pg1"),
+						makeLargeLabeledPod("p2", "pg1"),
+						makeLargeLabeledPod("p3", "pg2"),
+						makeLargeLabeledPod("p4", "pg2"),
+						makeLargeLabeledPod("p5", "pg3"),
+						makeLargeLabeledPod("p6", "pg3"),
+					},
+				},
+				{
+					Name:                 "Verify all pods in the composite group are scheduled",
+					WaitForPodsScheduled: []string{"p1", "p2", "p3", "p4", "p5", "p6"},
+				},
+				{
+					Name: "Verify each child group scheduled on its own rack",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p1", "p2", "p3", "p4", "p5", "p6"},
+						Nodes: sets.New("node1-z1-r1", "node2-z1-r1", "node3-z1-r2", "node4-z1-r2", "node5-z1-r3", "node6-z1-r3"),
+					},
+				},
+			},
+		},
+		{
+			name: "optimized 3-level CPG scheduling with 2 identical child CompositePodGroups across zones and racks",
+			steps: []stepsframework.Step{
+				{
+					Name: "Create 8 nodes across 2 zones and 4 racks, each node with 2 CPU available",
+					CreateNodes: []*v1.Node{
+						makeNode("node1-z1-r1", "rack-1", "zone-1"),
+						makeNode("node2-z1-r1", "rack-1", "zone-1"),
+						makeNode("node3-z1-r2", "rack-2", "zone-1"),
+						makeNode("node4-z1-r2", "rack-2", "zone-1"),
+						makeNode("node5-z2-r3", "rack-3", "zone-2"),
+						makeNode("node6-z2-r3", "rack-3", "zone-2"),
+						makeNode("node7-z2-r4", "rack-4", "zone-2"),
+						makeNode("node8-z2-r4", "rack-4", "zone-2"),
+					},
+				},
+				{
+					Name:                    "Create the root CompositePodGroup object (Gang with minGroupCount=2, no topology constraint)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-root", "", "", 2),
+				},
+				{
+					Name:                    "Create child CompositePodGroup cpg-child-1 (Gang with minGroupCount=2, TopologyKey=zone, Parent=cpg-root)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-child-1", "cpg-root", "zone", 2),
+				},
+				{
+					Name:                    "Create child CompositePodGroup cpg-child-2 (Gang with minGroupCount=2, TopologyKey=zone, Parent=cpg-root)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-child-2", "cpg-root", "zone", 2),
+				},
+				{
+					Name:           "Create leaf PodGroup pg1-1 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-child-1)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg1-1", "cpg-child-1", "rack", 2),
+				},
+				{
+					Name:           "Create leaf PodGroup pg1-2 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-child-1)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg1-2", "cpg-child-1", "rack", 2),
+				},
+				{
+					Name:           "Create leaf PodGroup pg2-1 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-child-2)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg2-1", "cpg-child-2", "rack", 2),
+				},
+				{
+					Name:           "Create leaf PodGroup pg2-2 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-child-2)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg2-2", "cpg-child-2", "rack", 2),
+				},
+				{
+					Name: "Create identical pods for each leaf PodGroup",
+					CreatePods: []*v1.Pod{
+						makeLargeLabeledPod("p1", "pg1-1"),
+						makeLargeLabeledPod("p2", "pg1-1"),
+						makeLargeLabeledPod("p3", "pg1-2"),
+						makeLargeLabeledPod("p4", "pg1-2"),
+						makeLargeLabeledPod("p5", "pg2-1"),
+						makeLargeLabeledPod("p6", "pg2-1"),
+						makeLargeLabeledPod("p7", "pg2-2"),
+						makeLargeLabeledPod("p8", "pg2-2"),
+					},
+				},
+				{
+					Name:                 "Verify all pods in the 3-level hierarchy are scheduled",
+					WaitForPodsScheduled: []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"},
+				},
+				{
+					Name: "Verify all 8 nodes are utilized across the 2 zones and 4 racks",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods: []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"},
+						Nodes: sets.New(
+							"node1-z1-r1", "node2-z1-r1", "node3-z1-r2", "node4-z1-r2",
+							"node5-z2-r3", "node6-z2-r3", "node7-z2-r4", "node8-z2-r4",
+						),
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runCPGOptimizedTestScenario(t, tt)
+		})
+	}
+}
+
+func runCPGOptimizedTestScenario(t *testing.T, tt scenario) {
+	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+		features.CompositePodGroup:                          true,
+		features.GenericWorkload:                            true,
+		features.TopologyAwareWorkloadScheduling:            true,
+		features.TopologyAwareCompositePodGroupOptimization: true,
+	})
+
+	cfg := configtesting.V1ToInternalWithDefaults(t, configv1.KubeSchedulerConfiguration{
+		Profiles: []configv1.KubeSchedulerProfile{{
+			SchedulerName: ptr.To(v1.DefaultSchedulerName),
+			PluginConfig: []configv1.PluginConfig{
+				{
+					Name: interpodaffinity.Name,
+					Args: runtime.RawExtension{
+						Object: &configv1.InterPodAffinityArgs{
+							IgnorePreferredTermsOfExistingPods: true,
+						},
+					},
+				},
+				{
+					Name: podtopologyspread.Name,
+					Args: runtime.RawExtension{
+						Object: &configv1.PodTopologySpreadArgs{
+							DefaultingType: configv1.ListDefaulting,
+						},
+					},
+				},
+			},
+		}},
+	})
+
+	testCtx := testutils.InitTestSchedulerWithNS(t, "cpg-tas-opt",
+		scheduler.WithPodMaxBackoffSeconds(0),
+		scheduler.WithPodInitialBackoffSeconds(0),
+		scheduler.WithProfiles(cfg.Profiles...),
+	)
 	ns := testCtx.NS.Name
 
 	if err := stepsframework.RunSteps(testCtx, t, ns, tt.steps); err != nil {

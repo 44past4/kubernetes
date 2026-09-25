@@ -2470,11 +2470,16 @@ type fakePlacementPlugin struct {
 }
 
 var _ fwk.FilterPlugin = &fakePlacementPlugin{}
+var _ fwk.SignPlugin = &fakePlacementPlugin{}
 var _ fwk.PlacementGeneratePlugin = &fakePlacementPlugin{}
 var _ fwk.PlacementScorePlugin = &fakePlacementPlugin{}
 var _ fwk.ReservePlugin = &fakePlacementPlugin{}
 
 func (mp *fakePlacementPlugin) Name() string { return mp.name }
+
+func (mp *fakePlacementPlugin) SignPod(ctx context.Context, pod *v1.Pod) ([]fwk.SignFragment, *fwk.Status) {
+	return nil, nil
+}
 
 func (mp *fakePlacementPlugin) Reserve(ctx context.Context, state fwk.CycleState, p *v1.Pod, nodeName string) *fwk.Status {
 	if mp.podPerNode {
