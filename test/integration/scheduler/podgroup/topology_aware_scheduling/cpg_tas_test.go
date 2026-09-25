@@ -2024,3 +2024,132 @@ func runCPGTestScenario(t *testing.T, tt scenario) {
 		t.Fatal(err)
 	}
 }
+
+func TestCPGTopologyAwareScheduling_Optimization(t *testing.T) {
+	tests := []scenario{
+		{
+			name: "optimized scheduling with 2 identical children across racks",
+			steps: []stepsframework.Step{
+				{
+					Name: "Create nodes in 2 racks, each node with 2 CPU available",
+					CreateNodes: []*v1.Node{
+						makeNode("node1-z1-r1", "rack-1", "zone-1"),
+						makeNode("node2-z1-r1", "rack-1", "zone-1"),
+						makeNode("node3-z1-r2", "rack-2", "zone-1"),
+						makeNode("node4-z1-r2", "rack-2", "zone-1"),
+					},
+				},
+				{
+					Name:                    "Create the root CompositePodGroup object (Gang with minGroupCount=2, no topology constraint)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-root", "", "", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg1 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg1", "cpg-root", "rack", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg2 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg2", "cpg-root", "rack", 2),
+				},
+				{
+					Name: "Create identical pods belonging to pg1 and pg2, each pod requiring 2 CPU",
+					CreatePods: []*v1.Pod{
+						makeLargePod("p1", "pg1"),
+						makeLargePod("p2", "pg1"),
+						makeLargePod("p3", "pg2"),
+						makeLargePod("p4", "pg2"),
+					},
+				},
+				{
+					Name:                 "Verify all pods in the composite group are scheduled",
+					WaitForPodsScheduled: []string{"p1", "p2", "p3", "p4"},
+				},
+				{
+					Name: "Verify pg1 scheduled on one rack and pg2 scheduled on the other rack",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p1", "p2", "p3", "p4"},
+						Nodes: sets.New("node1-z1-r1", "node2-z1-r1", "node3-z1-r2", "node4-z1-r2"),
+					},
+				},
+			},
+		},
+		{
+			name: "optimized scheduling with 3 identical children across racks",
+			steps: []stepsframework.Step{
+				{
+					Name: "Create nodes in 3 racks, each node with 2 CPU available",
+					CreateNodes: []*v1.Node{
+						makeNode("node1-z1-r1", "rack-1", "zone-1"),
+						makeNode("node2-z1-r1", "rack-1", "zone-1"),
+						makeNode("node3-z1-r2", "rack-2", "zone-1"),
+						makeNode("node4-z1-r2", "rack-2", "zone-1"),
+						makeNode("node5-z1-r3", "rack-3", "zone-1"),
+						makeNode("node6-z1-r3", "rack-3", "zone-1"),
+					},
+				},
+				{
+					Name:                    "Create the root CompositePodGroup object (Gang with minGroupCount=3, no topology constraint)",
+					CreateCompositePodGroup: makeGangCompositePodGroup("cpg-root", "", "", 3),
+				},
+				{
+					Name:           "Create child PodGroup pg1 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg1", "cpg-root", "rack", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg2 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg2", "cpg-root", "rack", 2),
+				},
+				{
+					Name:           "Create child PodGroup pg3 (Gang with minCount=2, TopologyKey=rack, Parent=cpg-root)",
+					CreatePodGroup: makeGangPodGroupWithParent("pg3", "cpg-root", "rack", 2),
+				},
+				{
+					Name: "Create identical pods belonging to pg1, pg2, and pg3, each requiring 2 CPU",
+					CreatePods: []*v1.Pod{
+						makeLargePod("p1", "pg1"),
+						makeLargePod("p2", "pg1"),
+						makeLargePod("p3", "pg2"),
+						makeLargePod("p4", "pg2"),
+						makeLargePod("p5", "pg3"),
+						makeLargePod("p6", "pg3"),
+					},
+				},
+				{
+					Name:                 "Verify all pods in the composite group are scheduled",
+					WaitForPodsScheduled: []string{"p1", "p2", "p3", "p4", "p5", "p6"},
+				},
+				{
+					Name: "Verify each child group scheduled on its own rack",
+					VerifyAssignments: &stepsframework.VerifyAssignments{
+						Pods:  []string{"p1", "p2", "p3", "p4", "p5", "p6"},
+						Nodes: sets.New("node1-z1-r1", "node2-z1-r1", "node3-z1-r2", "node4-z1-r2", "node5-z1-r3", "node6-z1-r3"),
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runCPGOptimizedTestScenario(t, tt)
+		})
+	}
+}
+
+func runCPGOptimizedTestScenario(t *testing.T, tt scenario) {
+	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+		features.CompositePodGroup:                          true,
+		features.GenericWorkload:                            true,
+		features.TopologyAwareWorkloadScheduling:            true,
+		features.TopologyAwareCompositePodGroupOptimization: true,
+	})
+
+	testCtx := testutils.InitTestSchedulerWithNS(t, "cpg-tas-opt",
+		scheduler.WithPodMaxBackoffSeconds(0),
+		scheduler.WithPodInitialBackoffSeconds(0))
+	ns := testCtx.NS.Name
+
+	if err := stepsframework.RunSteps(testCtx, t, ns, tt.steps); err != nil {
+		t.Fatal(err)
+	}
+}
