@@ -19,8 +19,12 @@ spec:
   {{- else }}
     basic: {}
   {{- end }}
-  {{- with .topologyKey }}
+  {{- if and (eq .Level 2) .childTopologyKey }}
   schedulingConstraints:
     topology:
-    - key: {{ . }}
+    - key: {{ .childTopologyKey }}
+  {{- else if and (eq .Level 1) .topologyKey }}
+  schedulingConstraints:
+    topology:
+    - key: {{ .topologyKey }}
   {{- end }}

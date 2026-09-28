@@ -503,6 +503,7 @@
 # the same zone (topology.kubernetes.io/zone), while child PodGroups require member pods to fit
 # within the same rack (topology.kubernetes.io/rack).
 - name: 2LevelCompositePodGroupsWithTopologyAwareScheduling
+  schedulerConfigPath: scheduler-config.yaml
   featureGates:
     GenericWorkload: true
     TopologyAwareWorkloadScheduling: true
@@ -526,7 +527,7 @@
     templatePath: templates/composite-podgroup.yaml
     templateParams:
       gang: true
-      topologyKey: topology.kubernetes.io/zone
+      topologyKey: $cpgTopologyKey|topology.kubernetes.io/zone
   - opcode: createPodGroups
     # Level 2 represents leaf podgroups children of the root composite podgroup.
     # $podGroupsCount and $parentLevel are calculated and set by createCompositePodGroupsOp.
@@ -547,6 +548,7 @@
     collectMetrics: true
     templateParams:
       podsPerGroup: $podsPerGroup
+      labelPodGroup: true
   workloads:
   - name: 12Nodes_2Zones_6Racks_2Trees_2Level_4PodGroups_12Pods
     labels: [integration-test, short]
@@ -558,6 +560,18 @@
       childrenPodGroupsPerCPG: 2
       minCount: 3
       podsPerGroup: 3
+  - name: 12Nodes_2Zones_6Racks_2Trees_2Level_4PodGroups_12Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [integration-test, short]
+    params:
+      initNodes: 12
+      nodesPerZone: 6
+      nodesPerRack: 2
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 2
+      minCount: 3
+      podsPerGroup: 3
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_4000Pods
     labels: [performance]
     params:
@@ -568,6 +582,18 @@
       childrenPodGroupsPerCPG: 4
       minCount: 500
       podsPerGroup: 500
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_4000Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 4
+      minCount: 500
+      podsPerGroup: 500
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_6000Pods
     labels: [performance]
     params:
@@ -578,6 +604,18 @@
       childrenPodGroupsPerCPG: 4
       minCount: 750
       podsPerGroup: 750
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_6000Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 4
+      minCount: 750
+      podsPerGroup: 750
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_8000Pods
     labels: [performance]
     params:
@@ -588,6 +626,18 @@
       childrenPodGroupsPerCPG: 4
       minCount: 1000
       podsPerGroup: 1000
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_8000Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 4
+      minCount: 1000
+      podsPerGroup: 1000
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_64PodGroups_6400Pods
     labels: [performance]
     params:
@@ -598,6 +648,18 @@
       childrenPodGroupsPerCPG: 32
       minCount: 100
       podsPerGroup: 100
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_64PodGroups_6400Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 32
+      minCount: 100
+      podsPerGroup: 100
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_128PodGroups_12800Pods
     labels: [performance]
     params:
@@ -608,6 +670,18 @@
       childrenPodGroupsPerCPG: 64
       minCount: 100
       podsPerGroup: 100
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_128PodGroups_12800Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 64
+      minCount: 100
+      podsPerGroup: 100
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods
     labels: [performance]
     params:
@@ -618,6 +692,42 @@
       childrenPodGroupsPerCPG: 128
       minCount: 100
       podsPerGroup: 100
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 128
+      minCount: 100
+      podsPerGroup: 100
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_NoCPGTAS
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 128
+      minCount: 100
+      podsPerGroup: 100
+      cpgTopologyKey: ""
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_NoCPGTAS_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenPodGroupsPerCPG: 128
+      minCount: 100
+      podsPerGroup: 100
+      cpgTopologyKey: ""
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
 
 # 3LevelCompositePodGroupsScheduling benchmarks scheduling throughput for 3-level CompositePodGroup hierarchies.
 # These typically represent JobSets.
@@ -842,3 +952,129 @@
       childrenPodGroupsPerCPG: 32
       minCount: 100
       podsPerGroup: 100
+
+# 3LevelCompositePodGroupsWithTopologyAwareScheduling benchmarks hierarchical TAS for 3-level CPG hierarchies
+# where Level 2 child CompositePodGroups have zone topology constraints and Level 3 leaf PodGroups have rack
+# topology constraints.
+- name: 3LevelCompositePodGroupsWithTopologyAwareScheduling
+  schedulerConfigPath: scheduler-config.yaml
+  featureGates:
+    GenericWorkload: true
+    TopologyAwareWorkloadScheduling: true
+    CompositePodGroup: true
+  workloadTemplate:
+  - opcode: createNodes
+    countParam: $initNodes
+    nodeTemplatePath: templates/tas-node.yaml
+    templateParams:
+      nodesPerZone: $nodesPerZone
+      nodesPerRack: $nodesPerRack
+  - opcode: createNamespaces
+    prefix: cpg-3level-tas-ns
+    count: 1
+  - opcode: createCompositePodGroups
+    # Level 1 represents the root composite podgroup (no topology constraint).
+    # Level 2 represents the children composite podgroups with zone topology constraint.
+    rootCountParam: $initRootCompositePodGroups
+    depth: 3
+    childrenCompositePodGroupsPerCPGParam: $childrenCompositePodGroupsPerCPG
+    childrenPodGroupsPerCPGParam: $childrenPodGroupsPerCPG
+    namespace: cpg-3level-tas-ns-0
+    templatePath: templates/composite-podgroup.yaml
+    templateParams:
+      gang: true
+      childTopologyKey: $childCPGTopologyKey|topology.kubernetes.io/zone
+  - opcode: createPodGroups
+    # Level 3 represents leaf podgroups with rack topology constraint referencing Level 2 CompositePodGroups.
+    # $podGroupsCount and $parentLevel are calculated and set by createCompositePodGroupsOp.
+    countParam: $podGroupsCount
+    namespace: cpg-3level-tas-ns-0
+    templatePath: templates/podgroup.yaml
+    templateParams:
+      parentLevel: $parentLevel
+      childrenPodGroupsPerCPG: $childrenPodGroupsPerCPG
+      minCount: $minCount
+      topologyKey: topology.kubernetes.io/rack
+  - opcode: createPods
+    # Pods belonging to leaf PodGroups.
+    countParam: $podGroupsCount
+    countMultiplierParam: $podsPerGroup
+    namespace: cpg-3level-tas-ns-0
+    podTemplatePath: templates/pod.yaml
+    collectMetrics: true
+    templateParams:
+      podsPerGroup: $podsPerGroup
+      labelPodGroup: true
+  workloads:
+  - name: 12Nodes_2Zones_6Racks_2Trees_3Level_8PodGroups_24Pods
+    labels: [integration-test, short]
+    params:
+      initNodes: 12
+      nodesPerZone: 6
+      nodesPerRack: 2
+      initRootCompositePodGroups: 2
+      childrenCompositePodGroupsPerCPG: 2
+      childrenPodGroupsPerCPG: 2
+      minCount: 3
+      podsPerGroup: 3
+  - name: 12Nodes_2Zones_6Racks_2Trees_3Level_8PodGroups_24Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [integration-test, short]
+    params:
+      initNodes: 12
+      nodesPerZone: 6
+      nodesPerRack: 2
+      initRootCompositePodGroups: 2
+      childrenCompositePodGroupsPerCPG: 2
+      childrenPodGroupsPerCPG: 2
+      minCount: 3
+      podsPerGroup: 3
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
+  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_64PodGroups_6400Pods
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenCompositePodGroupsPerCPG: 4
+      childrenPodGroupsPerCPG: 8
+      minCount: 100
+      podsPerGroup: 100
+  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_64PodGroups_6400Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenCompositePodGroupsPerCPG: 4
+      childrenPodGroupsPerCPG: 8
+      minCount: 100
+      podsPerGroup: 100
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
+  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_256PodGroups_25600Pods
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenCompositePodGroupsPerCPG: 8
+      childrenPodGroupsPerCPG: 16
+      minCount: 100
+      podsPerGroup: 100
+  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_256PodGroups_25600Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+    labels: [performance]
+    params:
+      initNodes: 5000
+      nodesPerZone: 1000
+      nodesPerRack: 100
+      initRootCompositePodGroups: 2
+      childrenCompositePodGroupsPerCPG: 8
+      childrenPodGroupsPerCPG: 16
+      minCount: 100
+      podsPerGroup: 100
+    featureGates:
+      TopologyAwareCompositePodGroupOptimization: true
