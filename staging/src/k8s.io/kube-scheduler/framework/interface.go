@@ -311,7 +311,9 @@ type PluginScore struct {
 type PlacementPluginScores struct {
 	// Placement is the placement info that can be used to identify a specific placement.
 	Placement *Placement
-	// Scores is scores from plugins and extenders.
+	// RawScores holds ScorePlacement() output for each active placement scoring plugin, before normalization is applied.
+	RawScores []PluginScore
+	// Scores is normalized weighted scores from plugins.
 	Scores []PluginScore
 	// TotalScore is the total score in Scores.
 	TotalScore int64

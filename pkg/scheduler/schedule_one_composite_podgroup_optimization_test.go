@@ -426,11 +426,14 @@ func TestAreChildPodGroupsIdentical(t *testing.T) {
 	}
 }
 
-// evalTrackingPlacementPlugin records which placements were evaluated for each pod.
+// evalTrackingPlacementPlugin records which placements were evaluated, scored, and normalized.
 type evalTrackingPlacementPlugin struct {
 	fakePlacementPlugin
-	mu          sync.Mutex
-	evaluations map[string][]string
+	mu             sync.Mutex
+	evaluations    map[string][]string
+	scored         map[string][]string
+	normalizeCalls map[string][][]string
+	normalizeFn    func(scores []fwk.PlacementScore) *fwk.Status
 }
 
 func (p *evalTrackingPlacementPlugin) Filter(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
@@ -438,6 +441,35 @@ func (p *evalTrackingPlacementPlugin) Filter(ctx context.Context, state fwk.Cycl
 	p.evaluations[pod.Name] = append(p.evaluations[pod.Name], nodeInfo.Node().Name)
 	p.mu.Unlock()
 	return p.fakePlacementPlugin.Filter(ctx, state, pod, nodeInfo)
+}
+
+func (p *evalTrackingPlacementPlugin) ScorePlacement(ctx context.Context, state fwk.PlacementCycleState, podGroup fwk.PodGroupInfo, placement *fwk.PodGroupAssignments) (int64, *fwk.Status) {
+	p.mu.Lock()
+	if p.scored != nil {
+		p.scored[podGroup.GetName()] = append(p.scored[podGroup.GetName()], placement.Placement.Name)
+	}
+	p.mu.Unlock()
+	return p.fakePlacementPlugin.ScorePlacement(ctx, state, podGroup, placement)
+}
+
+func (p *evalTrackingPlacementPlugin) PlacementScoreExtensions() fwk.PlacementScoreExtensions {
+	return p
+}
+
+func (p *evalTrackingPlacementPlugin) NormalizePlacementScore(ctx context.Context, state fwk.PodGroupCycleState, podGroup fwk.PodGroupInfo, scores []fwk.PlacementScore) *fwk.Status {
+	p.mu.Lock()
+	if p.normalizeCalls != nil {
+		names := make([]string, len(scores))
+		for i, s := range scores {
+			names[i] = s.Placement.Name
+		}
+		p.normalizeCalls[podGroup.GetName()] = append(p.normalizeCalls[podGroup.GetName()], names)
+	}
+	p.mu.Unlock()
+	if p.normalizeFn != nil {
+		return p.normalizeFn(scores)
+	}
+	return nil
 }
 
 func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
@@ -467,8 +499,12 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 		incompatibleIntraPG    bool
 		podPerNode             bool
 		injectedFilterStatus   map[string]*fwk.Status
+		customChildScores      map[string]map[string]int64
+		normalizeFn            func(scores []fwk.PlacementScore) *fwk.Status
 		expectedHosts          map[string]string
 		expectedMaxEvaluations map[string]int
+		expectedScoredCount    map[string]int
+		expectedNormalizeSizes map[string][]int
 	}
 
 	tests := []testCase{
@@ -485,6 +521,14 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 				"p1": 4, // child 1 evaluates all 4 placements
 				"p2": 2, // child 2 re-evaluates P_last (node1) and validates top candidate (node2)
 			},
+			expectedScoredCount: map[string]int{
+				"pg1": 4, // child 1 scores all 4 placements
+				"pg2": 0, // P_last (node1) is infeasible so no raw scoring is needed for pg2
+			},
+			expectedNormalizeSizes: map[string][]int{
+				"pg1": {4},
+				"pg2": {3}, // remaining 3 cached placements are re-normalized
+			},
 		},
 		{
 			name:              "2 identical children - colocation on P_last",
@@ -498,6 +542,64 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 			expectedMaxEvaluations: map[string]int{
 				"p1": 4, // child 1 evaluates all 4 placements
 				"p2": 1, // child 2 re-evaluates P_last (node1) and accepts directly
+			},
+			expectedScoredCount: map[string]int{
+				"pg1": 4, // child 1 scores all 4 placements
+				"pg2": 1, // child 2 only recalculates raw score for P_last (placement1)
+			},
+			expectedNormalizeSizes: map[string][]int{
+				"pg1": {4},
+				"pg2": {4}, // all 4 placements are re-normalized using cached raw scores for placement2..4
+			},
+		},
+		{
+			name:              "2 identical children - P_last remains feasible but raw score drops below cached placement after normalization",
+			enableFeatureGate: true,
+			numChildren:       2,
+			podPerNode:        false,
+			customChildScores: map[string]map[string]int64{
+				"pg1": {
+					"placement1": 200,
+					"placement2": 150,
+					"placement3": 100,
+					"placement4": 50,
+				},
+				"pg2": {
+					"placement1": 120, // P_last raw score drops below placement2's cached raw score (150)
+					"placement2": 150,
+					"placement3": 100,
+					"placement4": 50,
+				},
+			},
+			normalizeFn: func(scores []fwk.PlacementScore) *fwk.Status {
+				var maxScore int64
+				for _, s := range scores {
+					if s.Score > maxScore {
+						maxScore = s.Score
+					}
+				}
+				if maxScore > 0 {
+					for i := range scores {
+						scores[i].Score = scores[i].Score * fwk.MaxScore / maxScore
+					}
+				}
+				return nil
+			},
+			expectedHosts: map[string]string{
+				"p1": "node1",
+				"p2": "node2",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 4,
+				"p2": 2, // evaluates P_last (node1), re-scores P_last, re-normalizes all 4, then validates node2
+			},
+			expectedScoredCount: map[string]int{
+				"pg1": 4,
+				"pg2": 1, // only P_last (placement1) has ScorePlacement called
+			},
+			expectedNormalizeSizes: map[string][]int{
+				"pg1": {4},
+				"pg2": {4},
 			},
 		},
 		{
@@ -659,11 +761,15 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 			}
 			for _, cInfo := range childPGInfos {
 				generatePlacementsResult[cInfo.GetKey()] = childPlacements
-				scorePlacementsResult[cInfo.GetKey()] = map[string]int64{
-					"placement1": 100,
-					"placement2": 80,
-					"placement3": 60,
-					"placement4": 40,
+				if custom, ok := tt.customChildScores[cInfo.GetName()]; ok {
+					scorePlacementsResult[cInfo.GetKey()] = custom
+				} else {
+					scorePlacementsResult[cInfo.GetKey()] = map[string]int64{
+						"placement1": 100,
+						"placement2": 80,
+						"placement3": 60,
+						"placement4": 40,
+					}
 				}
 			}
 
@@ -676,7 +782,10 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 					reservedNodes:            sets.New[string](),
 					filterStatus:             tt.injectedFilterStatus,
 				},
-				evaluations: make(map[string][]string),
+				evaluations:    make(map[string][]string),
+				scored:         make(map[string][]string),
+				normalizeCalls: make(map[string][][]string),
+				normalizeFn:    tt.normalizeFn,
 			}
 
 			orderedPlugin := &orderedPlacementPlugin{&trackingPlugin.fakePlacementPlugin}
@@ -769,6 +878,31 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 				if actualEvals > maxEval {
 					t.Errorf("Pod %s had %d placement evaluations %v, wanted <= %d",
 						podName, actualEvals, trackingPlugin.evaluations[podName], maxEval)
+				}
+			}
+
+			// Verify ScorePlacement call counts
+			for pgName, wantScored := range tt.expectedScoredCount {
+				gotScored := len(trackingPlugin.scored[pgName])
+				if gotScored != wantScored {
+					t.Errorf("PodGroup %s had %d ScorePlacement calls %v, want %d",
+						pgName, gotScored, trackingPlugin.scored[pgName], wantScored)
+				}
+			}
+
+			// Verify NormalizePlacementScore call sizes
+			for pgName, wantSizes := range tt.expectedNormalizeSizes {
+				calls := trackingPlugin.normalizeCalls[pgName]
+				if len(calls) != len(wantSizes) {
+					t.Errorf("PodGroup %s had %d NormalizePlacementScore calls %v, want %d",
+						pgName, len(calls), calls, len(wantSizes))
+					continue
+				}
+				for i, wantSize := range wantSizes {
+					if len(calls[i]) != wantSize {
+						t.Errorf("PodGroup %s NormalizePlacementScore call %d had %d placements %v, want %d",
+							pgName, i, len(calls[i]), calls[i], wantSize)
+					}
 				}
 			}
 		})

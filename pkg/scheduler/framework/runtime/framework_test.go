@@ -5332,6 +5332,10 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 			wantScore: []fwk.PlacementPluginScores{
 				{
 					Placement: placements[0],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 0},
+						{Name: "plugin2", Score: 0},
+					},
 					Scores: []fwk.PluginScore{
 						{Name: "plugin1", Score: 0},
 						{Name: "plugin2", Score: 0},
@@ -5340,6 +5344,10 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 				},
 				{
 					Placement: placements[1],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 50},
+						{Name: "plugin2", Score: 50},
+					},
 					Scores: []fwk.PluginScore{
 						{Name: "plugin1", Score: 50},
 						{Name: "plugin2", Score: 100},
@@ -5348,6 +5356,10 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 				},
 				{
 					Placement: placements[2],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 100},
+						{Name: "plugin2", Score: 0},
+					},
 					Scores: []fwk.PluginScore{
 						{Name: "plugin1", Score: 100},
 						{Name: "plugin2", Score: 0},
@@ -5421,6 +5433,10 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 			wantScore: []fwk.PlacementPluginScores{
 				{
 					Placement: placements[0],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 0},
+						{Name: "plugin2", Score: 100},
+					},
 					Scores: []fwk.PluginScore{
 						{Name: "plugin1", Score: 0},
 						{Name: "plugin2", Score: 50},
@@ -5429,6 +5445,10 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 				},
 				{
 					Placement: placements[1],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 50},
+						{Name: "plugin2", Score: 200},
+					},
 					Scores: []fwk.PluginScore{
 						{Name: "plugin1", Score: 50},
 						{Name: "plugin2", Score: 100},
@@ -5437,6 +5457,10 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 				},
 				{
 					Placement: placements[2],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 100},
+						{Name: "plugin2", Score: 400},
+					},
 					Scores: []fwk.PluginScore{
 						{Name: "plugin1", Score: 100},
 						{Name: "plugin2", Score: 200},
@@ -5535,6 +5559,236 @@ func TestRunPlacementScorePlugins(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.wantScore, result, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("Unexpected placement score (-want,+got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestRunRawPlacementScorePlugins(t *testing.T) {
+	placement := &fwk.Placement{Name: "p1"}
+
+	tests := []struct {
+		name           string
+		plugins        []testPlacementScorePlugin
+		want           []fwk.PluginScore
+		wantStatusCode fwk.Code
+	}{
+		{
+			name:           "no plugins",
+			plugins:        []testPlacementScorePlugin{},
+			want:           nil,
+			wantStatusCode: fwk.Success,
+		},
+		{
+			name: "returns raw scores without weighting or normalization",
+			plugins: []testPlacementScorePlugin{
+				{
+					name:   "plugin1",
+					weight: 3,
+					results: map[*fwk.Placement]placementScoreResult{
+						placement: {score: 40, status: nil},
+					},
+				},
+				{
+					name:   "plugin2",
+					weight: 2,
+					results: map[*fwk.Placement]placementScoreResult{
+						placement: {score: 200, status: nil},
+					},
+					normalizeFn: func(scores []fwk.PlacementScore) *fwk.Status {
+						for i := range scores {
+							scores[i].Score = 10
+						}
+						return nil
+					},
+				},
+			},
+			want: []fwk.PluginScore{
+				{Name: "plugin1", Score: 40},
+				{Name: "plugin2", Score: 200},
+			},
+			wantStatusCode: fwk.Success,
+		},
+		{
+			name: "plugin returns error",
+			plugins: []testPlacementScorePlugin{
+				{
+					name:   "plugin1",
+					weight: 1,
+					results: map[*fwk.Placement]placementScoreResult{
+						placement: {score: 0, status: fwk.NewStatus(fwk.Error, "score error")},
+					},
+				},
+			},
+			wantStatusCode: fwk.Error,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
+			r := make(Registry)
+			pluginSet := config.PluginSet{}
+			for _, p := range tt.plugins {
+				pluginSet.Enabled = append(pluginSet.Enabled, config.Plugin{Name: p.name, Weight: p.weight})
+				if err := r.Register(p.name, func(ctx context.Context, _ runtime.Object, fh fwk.Handle) (fwk.Plugin, error) {
+					return &p, nil
+				}); err != nil {
+					t.Fatalf("Unexpected error during call to Register, got %v", err)
+				}
+			}
+			profile := config.KubeSchedulerProfile{Plugins: &config.Plugins{PlacementScore: pluginSet}}
+			fw, err := newFrameworkWithQueueSortAndBind(ctx, r, profile, WithSnapshotSharedLister(cache.NewEmptySnapshot()))
+			if err != nil {
+				t.Fatalf("Unexpected error during calling NewFramework, got %v", err)
+			}
+
+			got, status := fw.RunRawPlacementScorePlugins(ctx, framework.NewCycleState(), nil, &fwk.PodGroupAssignments{Placement: placement})
+			if status.Code() != tt.wantStatusCode {
+				t.Errorf("got status code %s, want %s", status.Code(), tt.wantStatusCode)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("RunRawPlacementScorePlugins (-want,+got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestNormalizePlacementScores(t *testing.T) {
+	placements := []*fwk.Placement{{Name: "p0"}, {Name: "p1"}}
+
+	tests := []struct {
+		name           string
+		plugins        []testPlacementScorePlugin
+		inputScores    []fwk.PlacementPluginScores
+		want           []fwk.PlacementPluginScores
+		wantStatusCode fwk.Code
+	}{
+		{
+			name:    "no plugins",
+			plugins: []testPlacementScorePlugin{},
+			inputScores: []fwk.PlacementPluginScores{
+				{Placement: placements[0]},
+				{Placement: placements[1]},
+			},
+			want: []fwk.PlacementPluginScores{
+				{Placement: placements[0]},
+				{Placement: placements[1]},
+			},
+			wantStatusCode: fwk.Success,
+		},
+		{
+			name: "normalizes and weights raw scores across placements",
+			plugins: []testPlacementScorePlugin{
+				{
+					name:   "plugin1",
+					weight: 1,
+				},
+				{
+					name:   "plugin2",
+					weight: 2,
+					normalizeFn: func(scores []fwk.PlacementScore) *fwk.Status {
+						for i := range scores {
+							scores[i].Score = scores[i].Score / 4
+						}
+						return nil
+					},
+				},
+			},
+			inputScores: []fwk.PlacementPluginScores{
+				{
+					Placement: placements[0],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 20},
+						{Name: "plugin2", Score: 200},
+					},
+				},
+				{
+					Placement: placements[1],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 80},
+						{Name: "plugin2", Score: 400},
+					},
+				},
+			},
+			want: []fwk.PlacementPluginScores{
+				{
+					Placement: placements[0],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 20},
+						{Name: "plugin2", Score: 200},
+					},
+					Scores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 20},
+						{Name: "plugin2", Score: 100},
+					},
+					TotalScore: 120,
+				},
+				{
+					Placement: placements[1],
+					RawScores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 80},
+						{Name: "plugin2", Score: 400},
+					},
+					Scores: []fwk.PluginScore{
+						{Name: "plugin1", Score: 80},
+						{Name: "plugin2", Score: 200},
+					},
+					TotalScore: 280,
+				},
+			},
+			wantStatusCode: fwk.Success,
+		},
+		{
+			name: "normalize failure",
+			plugins: []testPlacementScorePlugin{
+				{
+					name:   "plugin1",
+					weight: 1,
+					normalizeFn: func(scores []fwk.PlacementScore) *fwk.Status {
+						return fwk.NewStatus(fwk.Error, "normalize error")
+					},
+				},
+			},
+			inputScores: []fwk.PlacementPluginScores{
+				{
+					Placement: placements[0],
+					RawScores: []fwk.PluginScore{{Name: "plugin1", Score: 10}},
+				},
+			},
+			wantStatusCode: fwk.Error,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ctx := ktesting.NewTestContext(t)
+			r := make(Registry)
+			pluginSet := config.PluginSet{}
+			for _, p := range tt.plugins {
+				pluginSet.Enabled = append(pluginSet.Enabled, config.Plugin{Name: p.name, Weight: p.weight})
+				if err := r.Register(p.name, func(ctx context.Context, _ runtime.Object, fh fwk.Handle) (fwk.Plugin, error) {
+					return &p, nil
+				}); err != nil {
+					t.Fatalf("Unexpected error during call to Register, got %v", err)
+				}
+			}
+			profile := config.KubeSchedulerProfile{Plugins: &config.Plugins{PlacementScore: pluginSet}}
+			fw, err := newFrameworkWithQueueSortAndBind(ctx, r, profile, WithSnapshotSharedLister(cache.NewEmptySnapshot()))
+			if err != nil {
+				t.Fatalf("Unexpected error during calling NewFramework, got %v", err)
+			}
+
+			scores := make([]fwk.PlacementPluginScores, len(tt.inputScores))
+			copy(scores, tt.inputScores)
+			status := fw.NormalizePlacementScores(ctx, framework.NewCycleState(), nil, scores)
+			if status.Code() != tt.wantStatusCode {
+				t.Errorf("got status code %s, want %s", status.Code(), tt.wantStatusCode)
+			}
+			if status.IsSuccess() {
+				if diff := cmp.Diff(tt.want, scores, cmpopts.EquateEmpty()); diff != "" {
+					t.Errorf("NormalizePlacementScores (-want,+got):\n%s", diff)
+				}
 			}
 		})
 	}

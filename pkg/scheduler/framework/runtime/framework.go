@@ -1657,51 +1657,136 @@ func (f *frameworkImpl) RunPlacementScorePlugins(ctx context.Context, state fwk.
 	}
 
 	allPlacementPluginScores := make([]fwk.PlacementPluginScores, len(podGroupAssignments))
-	numPlugins := len(f.placementScorePlugins)
-	plugins := make([]fwk.PlacementScorePlugin, 0, numPlugins)
-	pluginToPlacementScores := make(map[string][]fwk.PlacementScore, numPlugins)
-	for _, pl := range f.placementScorePlugins {
-		plugins = append(plugins, pl)
+	plugins := f.placementScorePlugins
+	if len(plugins) == 0 {
+		for i, pga := range podGroupAssignments {
+			allPlacementPluginScores[i] = fwk.PlacementPluginScores{
+				Placement: pga.Placement,
+				RawScores: make([]fwk.PluginScore, 0),
+				Scores:    make([]fwk.PluginScore, 0),
+			}
+		}
+		return allPlacementPluginScores, nil
+	}
+
+	pluginToPlacementScores := make(map[string][]fwk.PlacementScore, len(plugins))
+	for _, pl := range plugins {
 		pluginToPlacementScores[pl.Name()] = make([]fwk.PlacementScore, len(podGroupAssignments))
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := parallelize.NewResultChannel[error]()
 
-	if len(plugins) > 0 {
-		logger := klog.FromContext(ctx)
-		verboseLogs := logger.V(4).Enabled()
-		if verboseLogs {
-			logger = klog.LoggerWithName(logger, "PlacementScore")
+	if l := klog.FromContext(ctx).V(4); l.Enabled() {
+		ctx = klog.NewContext(ctx, klog.LoggerWithName(l, "PlacementScore"))
+	}
+	// Run ScorePlacement method for each placement in parallel.
+	f.Parallelizer().Until(ctx, len(podGroupAssignments), func(index int) {
+		pga := podGroupAssignments[index]
+		placementCtx := ctx
+		if l := klog.FromContext(placementCtx).V(4); l.Enabled() {
+			placementCtx = klog.NewContext(placementCtx,
+				klog.LoggerWithValues(l, "placement", pga.Placement.Name),
+			)
 		}
-		// Run ScorePlacement method for each placement in parallel.
-		f.Parallelizer().Until(ctx, len(podGroupAssignments), func(index int) {
-			pga := podGroupAssignments[index]
-			logger := logger
-			if verboseLogs {
-				logger = klog.LoggerWithValues(logger, "placement", pga.Placement.Name)
-			}
-			for _, pl := range plugins {
-				ctx := ctx
-				if verboseLogs {
-					logger := klog.LoggerWithName(logger, pl.Name())
-					ctx = klog.NewContext(ctx, logger)
-				}
-				s, status := f.runPlacementScorePlugin(ctx, pl, placementStates[index], podGroupInfo, pga)
-				if !status.IsSuccess() {
-					err := fmt.Errorf("plugin %q failed with: %w", pl.Name(), status.AsError())
-					errCh.SendWithCancel(err, cancel)
-					return
-				}
-				pluginToPlacementScores[pl.Name()][index] = fwk.PlacementScore{
-					Placement: pga.Placement,
-					Score:     s,
-				}
-			}
-		}, metrics.PlacementScore)
-		if err := errCh.Receive(); err != nil {
-			return nil, fwk.AsStatus(fmt.Errorf("running PlacementScore plugins: %w", err))
+		rawScores, status := f.runRawPlacementScorePlugins(placementCtx, placementStates[index], podGroupInfo, pga, plugins)
+		if !status.IsSuccess() {
+			errCh.SendWithCancel(status.AsError(), cancel)
+			return
 		}
+		allPlacementPluginScores[index] = fwk.PlacementPluginScores{
+			Placement: pga.Placement,
+			RawScores: rawScores,
+		}
+		for _, rawScore := range rawScores {
+			pluginToPlacementScores[rawScore.Name][index] = fwk.PlacementScore{
+				Placement: pga.Placement,
+				Score:     rawScore.Score,
+			}
+		}
+	}, metrics.PlacementScore)
+	if err := errCh.Receive(); err != nil {
+		return nil, fwk.AsStatus(fmt.Errorf("running PlacementScore plugins: %w", err))
+	}
+
+	status = f.normalizePlacementScores(ctx, state, podGroupInfo, plugins, allPlacementPluginScores, pluginToPlacementScores)
+	if !status.IsSuccess() {
+		return nil, status
+	}
+	return allPlacementPluginScores, nil
+}
+
+func (f *frameworkImpl) RunRawPlacementScorePlugins(ctx context.Context, state fwk.PlacementCycleState, podGroupInfo fwk.PodGroupInfo, placement *fwk.PodGroupAssignments) ([]fwk.PluginScore, *fwk.Status) {
+	plugins := f.placementScorePlugins
+	if len(plugins) == 0 {
+		return nil, nil
+	}
+	return f.runRawPlacementScorePlugins(ctx, state, podGroupInfo, placement, plugins)
+}
+
+func (f *frameworkImpl) runRawPlacementScorePlugins(ctx context.Context, state fwk.PlacementCycleState, podGroupInfo fwk.PodGroupInfo,
+	placement *fwk.PodGroupAssignments, plugins []fwk.PlacementScorePlugin) ([]fwk.PluginScore, *fwk.Status) {
+	scores := make([]fwk.PluginScore, 0, len(plugins))
+	for _, pl := range plugins {
+		plCtx := ctx
+		if l := klog.FromContext(ctx).V(4); l.Enabled() {
+			plCtx = klog.NewContext(ctx, klog.LoggerWithName(l, pl.Name()))
+		}
+		score, status := f.runPlacementScorePlugin(plCtx, pl, state, podGroupInfo, placement)
+		if !status.IsSuccess() {
+			return nil, fwk.AsStatus(fmt.Errorf("plugin %q failed with: %w", pl.Name(), status.AsError()))
+		}
+		scores = append(scores, fwk.PluginScore{Name: pl.Name(), Score: score})
+	}
+	return scores, nil
+}
+
+func (f *frameworkImpl) NormalizePlacementScores(ctx context.Context, state fwk.PodGroupCycleState, podGroupInfo fwk.PodGroupInfo,
+	scores []fwk.PlacementPluginScores) *fwk.Status {
+	plugins := f.placementScorePlugins
+	if len(plugins) == 0 {
+		for i := range scores {
+			scores[i].Scores = make([]fwk.PluginScore, 0)
+			scores[i].TotalScore = 0
+		}
+		return nil
+	}
+	pluginToPlacementScores := make(map[string][]fwk.PlacementScore, len(plugins))
+	for _, pl := range plugins {
+		pluginToPlacementScores[pl.Name()] = make([]fwk.PlacementScore, len(scores))
+	}
+
+	for i, placementScore := range scores {
+		for _, pl := range plugins {
+			pluginToPlacementScores[pl.Name()][i] = fwk.PlacementScore{
+				Placement: placementScore.Placement,
+			}
+		}
+		for _, rawScore := range placementScore.RawScores {
+			if placementScoreList, ok := pluginToPlacementScores[rawScore.Name]; ok {
+				placementScoreList[i] = fwk.PlacementScore{
+					Placement: placementScore.Placement,
+					Score:     rawScore.Score,
+				}
+			}
+		}
+	}
+
+	return f.normalizePlacementScores(ctx, state, podGroupInfo, plugins, scores, pluginToPlacementScores)
+}
+
+func (f *frameworkImpl) normalizePlacementScores(ctx context.Context, state fwk.PodGroupCycleState, podGroupInfo fwk.PodGroupInfo,
+	plugins []fwk.PlacementScorePlugin, scores []fwk.PlacementPluginScores, pluginToPlacementScores map[string][]fwk.PlacementScore) *fwk.Status {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := parallelize.NewResultChannel[error]()
+
+	// Pre-resolve per-plugin data into slices to avoid map lookups.
+	placementScoreLists := make([][]fwk.PlacementScore, len(plugins))
+	weights := make([]int, len(plugins))
+	for i, pl := range plugins {
+		placementScoreLists[i] = pluginToPlacementScores[pl.Name()]
+		weights[i] = f.placementScorePluginWeight[pl.Name()]
 	}
 
 	// Run NormalizePlacementScore method for each PlacementScorePlugin in parallel.
@@ -1710,8 +1795,7 @@ func (f *frameworkImpl) RunPlacementScorePlugins(ctx context.Context, state fwk.
 		if pl.PlacementScoreExtensions() == nil {
 			return
 		}
-		placementScoreList := pluginToPlacementScores[pl.Name()]
-		status := f.runPlacementScoreExtension(ctx, pl, state, podGroupInfo, placementScoreList)
+		status := f.runPlacementScoreExtension(ctx, pl, state, podGroupInfo, placementScoreLists[index])
 		if !status.IsSuccess() {
 			err := fmt.Errorf("plugin %q failed with: %w", pl.Name(), status.AsError())
 			errCh.SendWithCancel(err, cancel)
@@ -1719,41 +1803,34 @@ func (f *frameworkImpl) RunPlacementScorePlugins(ctx context.Context, state fwk.
 		}
 	}, metrics.PlacementScore)
 	if err := errCh.Receive(); err != nil {
-		return nil, fwk.AsStatus(fmt.Errorf("running NormalizePlacementScore on PlacementScore plugins: %w", err))
+		return fwk.AsStatus(fmt.Errorf("running NormalizePlacementScore on PlacementScore plugins: %w", err))
 	}
 
-	// Apply score weight for each PlacementScorePlugin in parallel,
-	// and then, build allPlacementPluginScores.
-	f.Parallelizer().Until(ctx, len(podGroupAssignments), func(index int) {
-		placementPluginScores := fwk.PlacementPluginScores{
-			Placement: podGroupAssignments[index].Placement,
-			Scores:    make([]fwk.PluginScore, len(plugins)),
-		}
-
+	// Apply score weight for each PlacementScorePlugin in parallel.
+	f.Parallelizer().Until(ctx, len(scores), func(index int) {
+		placementPluginScores := make([]fwk.PluginScore, len(plugins))
+		var totalScore int64
 		for i, pl := range plugins {
-			weight := f.placementScorePluginWeight[pl.Name()]
-			placementScoreList := pluginToPlacementScores[pl.Name()]
-			score := placementScoreList[index].Score
+			score := placementScoreLists[i][index].Score
 
 			if score > fwk.MaxScore || score < fwk.MinScore {
-				err := fmt.Errorf("plugin %q returns an invalid score %v, it should in the range of [%v, %v] after normalizing", pl.Name(), score, fwk.MinScore, fwk.MaxScore)
+				err := fmt.Errorf("plugin %q returns an invalid score %v, it should in the range of [%v, %v] after normalizing",
+					pl.Name(), score, fwk.MinScore, fwk.MaxScore)
 				errCh.SendWithCancel(err, cancel)
 				return
 			}
-			weightedScore := score * int64(weight)
-			placementPluginScores.Scores[i] = fwk.PluginScore{
-				Name:  pl.Name(),
-				Score: weightedScore,
-			}
-			placementPluginScores.TotalScore += weightedScore
+			weightedScore := score * int64(weights[i])
+			placementPluginScores[i] = fwk.PluginScore{Name: pl.Name(), Score: weightedScore}
+			totalScore += weightedScore
 		}
-		allPlacementPluginScores[index] = placementPluginScores
+		scores[index].Scores = placementPluginScores
+		scores[index].TotalScore = totalScore
 	}, metrics.PlacementScore)
 	if err := errCh.Receive(); err != nil {
-		return nil, fwk.AsStatus(fmt.Errorf("applying score defaultWeights on PlacementScore plugins: %w", err))
+		return fwk.AsStatus(fmt.Errorf("applying score defaultWeights on PlacementScore plugins: %w", err))
 	}
 
-	return allPlacementPluginScores, nil
+	return nil
 }
 
 func (f *frameworkImpl) runPlacementScorePlugin(ctx context.Context, pl fwk.PlacementScorePlugin, state fwk.PlacementCycleState, podGroup fwk.PodGroupInfo, placement *fwk.PodGroupAssignments) (int64, *fwk.Status) {

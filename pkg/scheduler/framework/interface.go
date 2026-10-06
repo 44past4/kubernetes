@@ -275,6 +275,14 @@ type Framework interface {
 	// Each PlacementCycleState is passed to ScorePlacement for the PodGroupAssignments at the same index.
 	RunPlacementScorePlugins(ctx context.Context, state fwk.PodGroupCycleState, podGroupInfo fwk.PodGroupInfo, placements []*fwk.PodGroupAssignments, placementStates []fwk.PlacementCycleState) (ns []fwk.PlacementPluginScores, status *fwk.Status)
 
+	// RunRawPlacementScorePlugins runs only the ScorePlacement() phase of each active placement scoring plugin
+	// for a single placement, without NormalizePlacementScore or weighting, and returns pre-NormalizePlacementScore values.
+	RunRawPlacementScorePlugins(ctx context.Context, state fwk.PlacementCycleState, podGroupInfo fwk.PodGroupInfo, placement *fwk.PodGroupAssignments) ([]fwk.PluginScore, *fwk.Status)
+
+	// NormalizePlacementScores runs NormalizePlacementScore() and applies weights for the given placements, using
+	// their RawScores as input. It updates Scores and TotalScore in-place on each PlacementPluginScores.
+	NormalizePlacementScores(ctx context.Context, state fwk.PodGroupCycleState, podGroupInfo fwk.PodGroupInfo, scores []fwk.PlacementPluginScores) *fwk.Status
+
 	// RunPodGroupPostFilterPlugins runs the set of configured PodGroupPostFilter plugins.
 	RunPodGroupPostFilterPlugins(ctx context.Context, state *CycleState, podGroupInfo fwk.PodGroupInfo, pgSchedulingFunc fwk.PodGroupSchedulingFunc) (*fwk.PodGroupPostFilterResult, *fwk.Status)
 
