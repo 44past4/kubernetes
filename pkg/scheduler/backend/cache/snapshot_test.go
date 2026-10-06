@@ -2430,3 +2430,139 @@ func TestSnapshot_RemoveGenericPodGroup(t *testing.T) {
 		})
 	}
 }
+
+func TestSnapshotAffinityLabelKeys(t *testing.T) {
+	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node1"}}
+	pod1 := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", UID: "pod1"},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+			Affinity: &v1.Affinity{
+				PodAntiAffinity: &v1.PodAntiAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+						{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"app": "foo"},
+							},
+						},
+					},
+					PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+						{
+							Weight: 10,
+							PodAffinityTerm: v1.PodAffinityTerm{
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{"tier": "frontend"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	snapshot := NewSnapshot([]*v1.Pod{pod1}, []*v1.Node{node})
+
+	// Initial check
+	if diff := cmp.Diff([]string{"app"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"app", "tier"}, snapshot.AffinityLabelKeys()); diff != "" {
+		t.Fatalf("AffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+
+	// Assume pod2 with new required anti-affinity key and new preferred key
+	pod2 := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", UID: "pod2"},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+			Affinity: &v1.Affinity{
+				PodAntiAffinity: &v1.PodAntiAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+						{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"zone": "east"},
+							},
+						},
+					},
+				},
+				PodAffinity: &v1.PodAffinity{
+					PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+						{
+							Weight: 5,
+							PodAffinityTerm: v1.PodAffinityTerm{
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{"service": "cache"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	podInfo2, err := framework.NewPodInfo(pod2)
+	if err != nil {
+		t.Fatalf("unexpected NewPodInfo error: %v", err)
+	}
+	if err := snapshot.AssumePod(podInfo2); err != nil {
+		t.Fatalf("unexpected AssumePod error: %v", err)
+	}
+
+	if diff := cmp.Diff([]string{"app", "zone"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("after AssumePod, RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"app", "service", "tier", "zone"}, snapshot.AffinityLabelKeys()); diff != "" {
+		t.Fatalf("after AssumePod, AffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+
+	// Test mutations
+	if err := snapshot.StartMutations(); err != nil {
+		t.Fatalf("StartMutations failed: %v", err)
+	}
+
+	pod3 := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod3", Namespace: "default", UID: "pod3"},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+			Affinity: &v1.Affinity{
+				PodAntiAffinity: &v1.PodAntiAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+						{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"env": "prod"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	snapshot.addAffinityLabelKeys(pod3)
+
+	if diff := cmp.Diff([]string{"app", "env", "zone"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("during mutation, RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+
+	if err := snapshot.EndMutations(); err != nil {
+		t.Fatalf("EndMutations failed: %v", err)
+	}
+
+	// Verify restored after EndMutations
+	if diff := cmp.Diff([]string{"app", "zone"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("after EndMutations, RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+
+	// Forget pod2
+	logger, _ := ktesting.NewTestContext(t)
+	if err := snapshot.ForgetPod(logger, pod2); err != nil {
+		t.Fatalf("unexpected ForgetPod error: %v", err)
+	}
+
+	if diff := cmp.Diff([]string{"app"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("after ForgetPod, RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"app", "tier"}, snapshot.AffinityLabelKeys()); diff != "" {
+		t.Fatalf("after ForgetPod, AffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+}

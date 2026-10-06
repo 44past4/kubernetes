@@ -52,6 +52,14 @@ func (nodes nodeInfoLister) HavePodsWithRequiredNonHostScopedAntiAffinityList() 
 	return nodes, nil
 }
 
+func (nodes nodeInfoLister) RequiredAntiAffinityLabelKeys() []string {
+	return nil
+}
+
+func (nodes nodeInfoLister) AffinityLabelKeys() []string {
+	return nil
+}
+
 func TestNodesForStatusCode(t *testing.T) {
 	// Prepare 4 nodes names.
 	nodeNames := []string{"node1", "node2", "node3", "node4"}

@@ -57,7 +57,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-func newSignTestFramework(t *testing.T, ignorePreferredTermsOfExistingPods bool) (context.Context, framework.Framework) {
+func newSignTestFramework(t *testing.T, ignorePreferredTermsOfExistingPods bool, clusterPods ...*v1.Pod) (context.Context, framework.Framework) {
 	t.Helper()
 	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
 		features.TopologyAwareWorkloadScheduling:            true,
@@ -68,7 +68,12 @@ func newSignTestFramework(t *testing.T, ignorePreferredTermsOfExistingPods bool)
 
 	_, ctx := ktesting.NewTestContext(t)
 	informerFactory := informers.NewSharedInformerFactory(clientsetfake.NewClientset(), 0)
-	snapshot := internalcache.NewEmptySnapshot()
+	var snapshot *internalcache.Snapshot
+	if len(clusterPods) > 0 {
+		snapshot = internalcache.NewSnapshot(clusterPods, nil)
+	} else {
+		snapshot = internalcache.NewEmptySnapshot()
+	}
 	fts := feature.NewSchedulerFeaturesFromGates(utilfeature.DefaultFeatureGate)
 
 	interPodAffinityFactory := func(ctx context.Context, _ runtime.Object, h fwk.Handle) (fwk.Plugin, error) {
@@ -159,6 +164,7 @@ func TestAreChildPodGroupsIdentical(t *testing.T) {
 	tests := []struct {
 		name                               string
 		ignorePreferredTermsOfExistingPods *bool
+		clusterPods                        []*v1.Pod
 		children                           func() []*framework.PodGroupInfo
 		want                               bool
 	}{
@@ -326,8 +332,42 @@ func TestAreChildPodGroupsIdentical(t *testing.T) {
 			want: true,
 		},
 		{
-			name:                               "different pod labels across pod groups with IgnorePreferredTermsOfExistingPods disabled",
+			name:                               "different unreferenced pod labels across pod groups with IgnorePreferredTermsOfExistingPods disabled",
 			ignorePreferredTermsOfExistingPods: ptr.To(false),
+			children: func() []*framework.PodGroupInfo {
+				pg0 := makePGInfo("child-0", basePodSpec(), 2, 2, "rack")
+				for _, p := range pg0.UnscheduledPods {
+					p.Labels = map[string]string{"podgroup": "child-0"}
+				}
+				pg1 := makePGInfo("child-1", basePodSpec(), 2, 2, "rack")
+				for _, p := range pg1.UnscheduledPods {
+					p.Labels = map[string]string{"podgroup": "child-1"}
+				}
+				return []*framework.PodGroupInfo{pg0, pg1}
+			},
+			want: true,
+		},
+		{
+			name:                               "different pod labels across pod groups matching cluster anti-affinity with IgnorePreferredTermsOfExistingPods disabled",
+			ignorePreferredTermsOfExistingPods: ptr.To(false),
+			clusterPods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "existing-anti-pod", Namespace: "default"},
+					Spec: v1.PodSpec{
+						Affinity: &v1.Affinity{
+							PodAntiAffinity: &v1.PodAntiAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+									{
+										LabelSelector: &metav1.LabelSelector{
+											MatchLabels: map[string]string{"podgroup": "child-0"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			children: func() []*framework.PodGroupInfo {
 				pg0 := makePGInfo("child-0", basePodSpec(), 2, 2, "rack")
 				for _, p := range pg0.UnscheduledPods {
@@ -417,7 +457,7 @@ func TestAreChildPodGroupsIdentical(t *testing.T) {
 			if tt.ignorePreferredTermsOfExistingPods != nil {
 				ignorePreferred = *tt.ignorePreferredTermsOfExistingPods
 			}
-			ctx, schedFwk := newSignTestFramework(t, ignorePreferred)
+			ctx, schedFwk := newSignTestFramework(t, ignorePreferred, tt.clusterPods...)
 			got := areChildPodGroupsIdentical(ctx, schedFwk, tt.children())
 			if got != tt.want {
 				t.Errorf("areChildPodGroupsIdentical() = %v, want %v", got, tt.want)

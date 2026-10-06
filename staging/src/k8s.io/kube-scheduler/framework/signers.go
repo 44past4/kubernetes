@@ -34,6 +34,7 @@ const (
 	DynamicResourcesSignerName = "v1.Pod.Spec.DynamicResources"
 	ImageNamesSignerName       = "v1.Pod.Spec.CanonicalImageNames()"
 	LabelsSignerName           = "v1.Pod.Labels"
+	LabelsFilterKeysSignerName = "v1.Pod.Labels.FilterKeys"
 	NodeNameSignerName         = "v1.Pod.Spec.NodeName"
 	NodeAffinitySignerName     = "v1.Pod.Spec.Affinity.NodeAffinity"
 	NodeSelectorSignerName     = "v1.Pod.Spec.Affinity.NodeSelector"

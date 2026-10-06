@@ -42,6 +42,12 @@ type NodeInfoLister interface {
 	HavePodsWithRequiredNonHostScopedAntiAffinityList() ([]NodeInfo, error)
 	// Get returns the NodeInfo of the given node name.
 	Get(nodeName string) (NodeInfo, error)
+	// RequiredAntiAffinityLabelKeys returns the deterministic sorted list of label keys referenced in
+	// required-during-scheduling inter-pod anti-affinity terms across the cluster snapshot.
+	RequiredAntiAffinityLabelKeys() []string
+	// AffinityLabelKeys returns the deterministic sorted list of all label keys referenced in any
+	// inter-pod affinity or anti-affinity terms across the cluster snapshot.
+	AffinityLabelKeys() []string
 }
 
 // StorageInfoLister interface represents anything that handles storage-related operations and resources.

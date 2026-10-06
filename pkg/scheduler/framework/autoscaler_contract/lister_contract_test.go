@@ -68,6 +68,14 @@ func (c *nodeInfoListerContract) Get(_ string) (fwk.NodeInfo, error) {
 	return nil, nil
 }
 
+func (c *nodeInfoListerContract) RequiredAntiAffinityLabelKeys() []string {
+	return nil
+}
+
+func (c *nodeInfoListerContract) AffinityLabelKeys() []string {
+	return nil
+}
+
 type storageInfoListerContract struct{}
 
 func (c *storageInfoListerContract) IsPVCUsedByPods(_ string) bool {

@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -94,6 +96,17 @@ type cacheImpl struct {
 	// deltas from events handlers while within the scheduler cycle, we only apply and reset the delta to
 	// avoid global re-calculation.
 	pvcRefCountsDelta map[string]int
+
+	// requiredAntiAffinityLabelKeyRefCounts tracks the reference counts of label keys
+	// referenced in required-during-scheduling inter-pod anti-affinity across all pods in the cache.
+	requiredAntiAffinityLabelKeyRefCounts map[string]int
+	// preferredAffinityLabelKeyRefCounts tracks the reference counts of label keys
+	// referenced in preferred-during-scheduling inter-pod affinity and anti-affinity across all pods in the cache.
+	preferredAffinityLabelKeyRefCounts map[string]int
+	// sortedRequiredAntiAffinityLabelKeys is the pre-sorted list of keys from requiredAntiAffinityLabelKeyRefCounts.
+	sortedRequiredAntiAffinityLabelKeys []string
+	// sortedAllAffinityLabelKeys is the pre-sorted list of keys from the union of required and preferred affinity key refcounts.
+	sortedAllAffinityLabelKeys []string
 }
 
 type podState struct {
@@ -106,17 +119,21 @@ func newCache(ctx context.Context, period time.Duration, apiDispatcher fwk.APIDi
 		period: period,
 		stop:   ctx.Done(),
 
-		nodes:                    make(map[string]*nodeInfoListItem),
-		nodeTree:                 newNodeTree(logger, nil),
-		assumedPods:              sets.New[string](),
-		podStates:                make(map[string]*podState),
-		imageStates:              make(map[string]*fwk.ImageStateSummary),
-		podGroupStates:           make(map[fwk.EntityKey]*podGroupState),
-		compositePodGroupStates:  make(map[fwk.EntityKey]*compositePodGroupState),
-		genericWorkloadEnabled:   genericWorkloadEnabled,
-		compositePodGroupEnabled: compositePodGroupEnabled,
-		apiDispatcher:            apiDispatcher,
-		pvcRefCountsDelta:        make(map[string]int),
+		nodes:                                 make(map[string]*nodeInfoListItem),
+		nodeTree:                              newNodeTree(logger, nil),
+		assumedPods:                           sets.New[string](),
+		podStates:                             make(map[string]*podState),
+		imageStates:                           make(map[string]*fwk.ImageStateSummary),
+		podGroupStates:                        make(map[fwk.EntityKey]*podGroupState),
+		compositePodGroupStates:               make(map[fwk.EntityKey]*compositePodGroupState),
+		genericWorkloadEnabled:                genericWorkloadEnabled,
+		compositePodGroupEnabled:              compositePodGroupEnabled,
+		apiDispatcher:                         apiDispatcher,
+		pvcRefCountsDelta:                     make(map[string]int),
+		requiredAntiAffinityLabelKeyRefCounts: make(map[string]int),
+		preferredAffinityLabelKeyRefCounts:    make(map[string]int),
+		sortedRequiredAntiAffinityLabelKeys:   []string{},
+		sortedAllAffinityLabelKeys:            []string{},
 	}
 }
 
@@ -314,6 +331,17 @@ func (cache *cacheImpl) UpdateSnapshot(logger klog.Logger, nodeSnapshot *Snapsho
 			// Take a snapshot of composite pod group states for this scheduling cycle.
 			cache.updateCompositePodGroupStateSnapshot(nodeSnapshot)
 		}
+	}
+
+	nodeSnapshot.sortedRequiredAntiAffinityLabelKeys = cache.sortedRequiredAntiAffinityLabelKeys
+	nodeSnapshot.sortedAllAffinityLabelKeys = cache.sortedAllAffinityLabelKeys
+	nodeSnapshot.requiredAntiAffinityLabelKeyRefCounts = maps.Clone(cache.requiredAntiAffinityLabelKeyRefCounts)
+	if nodeSnapshot.requiredAntiAffinityLabelKeyRefCounts == nil {
+		nodeSnapshot.requiredAntiAffinityLabelKeyRefCounts = make(map[string]int)
+	}
+	nodeSnapshot.preferredAffinityLabelKeyRefCounts = maps.Clone(cache.preferredAffinityLabelKeyRefCounts)
+	if nodeSnapshot.preferredAffinityLabelKeyRefCounts == nil {
+		nodeSnapshot.preferredAffinityLabelKeyRefCounts = make(map[string]int)
 	}
 
 	return nil
@@ -535,6 +563,7 @@ func (cache *cacheImpl) addPod(logger klog.Logger, pod *v1.Pod, assumePod bool) 
 	defer cache.refreshPVCRefCountsDelta(n.info, 1)
 
 	n.info.AddPod(pod)
+	cache.addAffinityLabelKeys(pod)
 	cache.moveNodeInfoToHead(logger, pod.Spec.NodeName)
 	ps := &podState{
 		pod: pod,
@@ -591,6 +620,7 @@ func (cache *cacheImpl) removePod(logger klog.Logger, pod *v1.Pod, forgetPod boo
 		}
 	}
 
+	cache.removeAffinityLabelKeys(pod)
 	delete(cache.podStates, key)
 	delete(cache.assumedPods, key)
 
@@ -1335,4 +1365,86 @@ func (cache *cacheImpl) FindRootGroup(key fwk.EntityKey) (*fwk.RootGroup, error)
 	default:
 		return nil, fmt.Errorf("unsupported root key type %s for %s", rootKey.Type, key.String())
 	}
+}
+
+func (cache *cacheImpl) addAffinityLabelKeys(pod *v1.Pod) {
+	changedReq, changedPref := addAffinityLabelKeysToCounts(pod, cache.requiredAntiAffinityLabelKeyRefCounts, cache.preferredAffinityLabelKeyRefCounts)
+	if changedReq {
+		cache.sortedRequiredAntiAffinityLabelKeys = sortedKeysFromMap(cache.requiredAntiAffinityLabelKeyRefCounts)
+	}
+	if changedReq || changedPref {
+		cache.sortedAllAffinityLabelKeys = sortedUnionKeysFromMaps(cache.requiredAntiAffinityLabelKeyRefCounts, cache.preferredAffinityLabelKeyRefCounts)
+	}
+}
+
+func (cache *cacheImpl) removeAffinityLabelKeys(pod *v1.Pod) {
+	changedReq, changedPref := removeAffinityLabelKeysFromCounts(pod, cache.requiredAntiAffinityLabelKeyRefCounts, cache.preferredAffinityLabelKeyRefCounts)
+	if changedReq {
+		cache.sortedRequiredAntiAffinityLabelKeys = sortedKeysFromMap(cache.requiredAntiAffinityLabelKeyRefCounts)
+	}
+	if changedReq || changedPref {
+		cache.sortedAllAffinityLabelKeys = sortedUnionKeysFromMaps(cache.requiredAntiAffinityLabelKeyRefCounts, cache.preferredAffinityLabelKeyRefCounts)
+	}
+}
+
+func addAffinityLabelKeysToCounts(pod *v1.Pod, reqCounts, prefCounts map[string]int) (changedReq, changedPref bool) {
+	reqAntiKeys, prefKeys := fwk.ExtractAffinityLabelKeys(pod)
+	for key := range reqAntiKeys {
+		reqCounts[key]++
+		if reqCounts[key] == 1 {
+			changedReq = true
+		}
+	}
+	for key := range prefKeys {
+		prefCounts[key]++
+		if prefCounts[key] == 1 {
+			changedPref = true
+		}
+	}
+	return changedReq, changedPref
+}
+
+func removeAffinityLabelKeysFromCounts(pod *v1.Pod, reqCounts, prefCounts map[string]int) (changedReq, changedPref bool) {
+	reqAntiKeys, prefKeys := fwk.ExtractAffinityLabelKeys(pod)
+	for key := range reqAntiKeys {
+		reqCounts[key]--
+		if reqCounts[key] <= 0 {
+			delete(reqCounts, key)
+			changedReq = true
+		}
+	}
+	for key := range prefKeys {
+		prefCounts[key]--
+		if prefCounts[key] <= 0 {
+			delete(prefCounts, key)
+			changedPref = true
+		}
+	}
+	return changedReq, changedPref
+}
+
+func sortedKeysFromMap(m map[string]int) []string {
+	if len(m) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func sortedUnionKeysFromMaps(m1, m2 map[string]int) []string {
+	if len(m1) == 0 && len(m2) == 0 {
+		return []string{}
+	}
+	set := make(sets.Set[string], len(m1)+len(m2))
+	for k := range m1 {
+		set.Insert(k)
+	}
+	for k := range m2 {
+		set.Insert(k)
+	}
+	return sets.List(set)
 }

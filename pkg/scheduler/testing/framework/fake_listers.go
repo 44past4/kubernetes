@@ -260,6 +260,16 @@ func (nodes NodeInfoLister) HavePodsWithRequiredNonHostScopedAntiAffinityList() 
 	return nodes, nil
 }
 
+// RequiredAntiAffinityLabelKeys returns nil for fake lister.
+func (nodes NodeInfoLister) RequiredAntiAffinityLabelKeys() []string {
+	return nil
+}
+
+// AffinityLabelKeys returns nil for fake lister.
+func (nodes NodeInfoLister) AffinityLabelKeys() []string {
+	return nil
+}
+
 var _ storagelisters.CSINodeLister = CSINodeLister{}
 
 // CSINodeLister declares a storagev1.CSINode type for testing.

@@ -23,6 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 	fwk "k8s.io/kube-scheduler/framework"
@@ -66,17 +67,47 @@ func (pl *InterPodAffinity) SignPod(ctx context.Context, pod *v1.Pod) ([]fwk.Sig
 		return nil, fwk.NewStatus(fwk.Unschedulable, "pods with InterPodAffinity are not signable")
 	}
 
-	// If this option is set then we only consider affinity between pods that have affinity configured,
-	// so we can ignore the pods labels if it doesn't have rules set.
-	// Otherwise we need to include the pod's labels to ensure we catch affinity between the pod
-	// and other pods which may have affinity rules set.
-	if pl.args.IgnorePreferredTermsOfExistingPods {
-		return nil, nil
+	var filterKeys []string
+	if pl.sharedLister != nil && pl.sharedLister.NodeInfos() != nil {
+		if pl.args.IgnorePreferredTermsOfExistingPods {
+			filterKeys = pl.sharedLister.NodeInfos().RequiredAntiAffinityLabelKeys()
+		} else {
+			filterKeys = pl.sharedLister.NodeInfos().AffinityLabelKeys()
+		}
+	}
+	if filterKeys == nil {
+		filterKeys = []string{}
 	}
 
-	return []fwk.SignFragment{
-		{Key: fwk.LabelsSignerName, Value: pod.Labels},
-	}, nil
+	// Always include the active filter keys in the signature so that changes to cluster
+	// anti-affinity rules automatically invalidate older pod signatures.
+	fragments := []fwk.SignFragment{
+		{Key: fwk.LabelsFilterKeysSignerName, Value: filterKeys},
+	}
+
+	if len(filterKeys) == 0 || len(pod.Labels) == 0 {
+		return fragments, nil
+	}
+
+	keySet := sets.New(filterKeys...)
+	var matchedLabels map[string]string
+	for k, v := range pod.Labels {
+		if keySet.Has(k) {
+			if matchedLabels == nil {
+				matchedLabels = make(map[string]string)
+			}
+			matchedLabels[k] = v
+		}
+	}
+
+	if len(matchedLabels) > 0 {
+		fragments = append(fragments, fwk.SignFragment{
+			Key:   fwk.LabelsSignerName,
+			Value: matchedLabels,
+		})
+	}
+
+	return fragments, nil
 }
 
 // EventsToRegister returns the possible events that may make a failed Pod

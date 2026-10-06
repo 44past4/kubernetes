@@ -70,6 +70,14 @@ func (nodes nodeInfoLister) HavePodsWithRequiredNonHostScopedAntiAffinityList() 
 	return nodes, nil
 }
 
+func (nodes nodeInfoLister) RequiredAntiAffinityLabelKeys() []string {
+	return nil
+}
+
+func (nodes nodeInfoLister) AffinityLabelKeys() []string {
+	return nil
+}
+
 type sharedLister struct {
 	nodes nodeInfoLister
 }

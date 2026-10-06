@@ -52,6 +52,10 @@ type snapshotBackupData struct {
 	havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList []fwk.NodeInfo
 	usedPVCRefCounts                                          map[string]int
 	podGroupStates                                            map[fwk.EntityKey]*podGroupStateSnapshot
+	requiredAntiAffinityLabelKeyRefCounts                     map[string]int
+	preferredAffinityLabelKeyRefCounts                        map[string]int
+	sortedRequiredAntiAffinityLabelKeys                       []string
+	sortedAllAffinityLabelKeys                                []string
 }
 
 // newSnapshotBackupData is creating a snapshotBackupData struct and it is filling it with original data from snapshot.
@@ -63,8 +67,12 @@ func newSnapshotBackupData(s *Snapshot) *snapshotBackupData {
 		havePodsWithAffinityNodeInfoList: s.havePodsWithAffinityNodeInfoList,
 		havePodsWithRequiredAntiAffinityNodeInfoList:              s.havePodsWithRequiredAntiAffinityNodeInfoList,
 		havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList: s.havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList,
-		usedPVCRefCounts: s.usedPVCRefCounts,
-		podGroupStates:   s.podGroupStates,
+		usedPVCRefCounts:                      s.usedPVCRefCounts,
+		podGroupStates:                        s.podGroupStates,
+		requiredAntiAffinityLabelKeyRefCounts: s.requiredAntiAffinityLabelKeyRefCounts,
+		preferredAffinityLabelKeyRefCounts:    s.preferredAffinityLabelKeyRefCounts,
+		sortedRequiredAntiAffinityLabelKeys:   s.sortedRequiredAntiAffinityLabelKeys,
+		sortedAllAffinityLabelKeys:            s.sortedAllAffinityLabelKeys,
 	}
 }
 
@@ -77,6 +85,10 @@ func (b *snapshotBackupData) restore(s *Snapshot) {
 	s.havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList = b.havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList
 	s.usedPVCRefCounts = b.usedPVCRefCounts
 	s.podGroupStates = b.podGroupStates
+	s.requiredAntiAffinityLabelKeyRefCounts = b.requiredAntiAffinityLabelKeyRefCounts
+	s.preferredAffinityLabelKeyRefCounts = b.preferredAffinityLabelKeyRefCounts
+	s.sortedRequiredAntiAffinityLabelKeys = b.sortedRequiredAntiAffinityLabelKeys
+	s.sortedAllAffinityLabelKeys = b.sortedAllAffinityLabelKeys
 }
 
 // Snapshot is a snapshot of cache NodeInfo and NodeTree order. The scheduler takes a
@@ -125,6 +137,16 @@ type Snapshot struct {
 	snapshotBackup *snapshotBackupData
 	// compositePodGroupEnabled stores the CompositePodGroup feature gate value.
 	compositePodGroupEnabled bool
+	// requiredAntiAffinityLabelKeyRefCounts tracks the reference counts of label keys
+	// referenced in required-during-scheduling inter-pod anti-affinity across all pods in the snapshot.
+	requiredAntiAffinityLabelKeyRefCounts map[string]int
+	// preferredAffinityLabelKeyRefCounts tracks the reference counts of label keys
+	// referenced in preferred-during-scheduling inter-pod affinity and anti-affinity across all pods in the snapshot.
+	preferredAffinityLabelKeyRefCounts map[string]int
+	// sortedRequiredAntiAffinityLabelKeys is the pre-sorted list of keys from requiredAntiAffinityLabelKeyRefCounts.
+	sortedRequiredAntiAffinityLabelKeys []string
+	// sortedAllAffinityLabelKeys is the pre-sorted list of keys from the union of required and preferred affinity key refcounts.
+	sortedAllAffinityLabelKeys []string
 }
 
 var _ fwk.SharedLister = &Snapshot{}
@@ -169,13 +191,17 @@ type assumedPodState struct {
 // NewEmptySnapshot initializes a Snapshot struct and returns it.
 func NewEmptySnapshot() *Snapshot {
 	return &Snapshot{
-		nodeInfoMap:              make(map[string]*framework.NodeInfo),
-		usedPVCRefCounts:         make(map[string]int),
-		assumedPodStates:         make(map[string]*assumedPodState),
-		podGroupStates:           make(map[fwk.EntityKey]*podGroupStateSnapshot),
-		compositePodGroupStates:  make(map[fwk.EntityKey]*compositePodGroupStateSnapshot),
-		genericWorkloadEnabled:   utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload),
-		compositePodGroupEnabled: utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup),
+		nodeInfoMap:                           make(map[string]*framework.NodeInfo),
+		usedPVCRefCounts:                      make(map[string]int),
+		assumedPodStates:                      make(map[string]*assumedPodState),
+		podGroupStates:                        make(map[fwk.EntityKey]*podGroupStateSnapshot),
+		compositePodGroupStates:               make(map[fwk.EntityKey]*compositePodGroupStateSnapshot),
+		requiredAntiAffinityLabelKeyRefCounts: make(map[string]int),
+		preferredAffinityLabelKeyRefCounts:    make(map[string]int),
+		sortedRequiredAntiAffinityLabelKeys:   []string{},
+		sortedAllAffinityLabelKeys:            []string{},
+		genericWorkloadEnabled:                utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload),
+		compositePodGroupEnabled:              utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup),
 	}
 }
 
@@ -207,6 +233,9 @@ func NewSnapshot(pods []*v1.Pod, nodes []*v1.Node) *Snapshot {
 	s.havePodsWithRequiredAntiAffinityNodeInfoList = havePodsWithRequiredAntiAffinityNodeInfoList
 	s.havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList = havePodsWithRequiredNonHostScopedAntiAffinityNodeInfoList
 	s.usedPVCRefCounts = createUsedPVCRefCounts(nodeInfoMap)
+	for _, pod := range pods {
+		s.addAffinityLabelKeys(pod)
+	}
 	if s.genericWorkloadEnabled {
 		s.podGroupStates = createPodGroupStates(pods)
 	}
@@ -290,6 +319,13 @@ func (s *Snapshot) StartMutations() error {
 
 	s.usedPVCRefCounts = make(map[string]int)
 	maps.Copy(s.usedPVCRefCounts, s.snapshotBackup.usedPVCRefCounts)
+
+	s.requiredAntiAffinityLabelKeyRefCounts = make(map[string]int)
+	maps.Copy(s.requiredAntiAffinityLabelKeyRefCounts, s.snapshotBackup.requiredAntiAffinityLabelKeyRefCounts)
+	s.preferredAffinityLabelKeyRefCounts = make(map[string]int)
+	maps.Copy(s.preferredAffinityLabelKeyRefCounts, s.snapshotBackup.preferredAffinityLabelKeyRefCounts)
+	s.sortedRequiredAntiAffinityLabelKeys = slices.Clone(s.snapshotBackup.sortedRequiredAntiAffinityLabelKeys)
+	s.sortedAllAffinityLabelKeys = slices.Clone(s.snapshotBackup.sortedAllAffinityLabelKeys)
 
 	if s.genericWorkloadEnabled {
 		s.podGroupStates = make(map[fwk.EntityKey]*podGroupStateSnapshot)
@@ -525,6 +561,18 @@ func (s *Snapshot) Get(nodeName string) (fwk.NodeInfo, error) {
 	return nil, fmt.Errorf("nodeinfo not found for node name %q", nodeName)
 }
 
+// RequiredAntiAffinityLabelKeys returns the deterministic sorted list of label keys referenced in
+// required-during-scheduling inter-pod anti-affinity terms across the cluster snapshot.
+func (s *Snapshot) RequiredAntiAffinityLabelKeys() []string {
+	return s.sortedRequiredAntiAffinityLabelKeys
+}
+
+// AffinityLabelKeys returns the deterministic sorted list of all label keys referenced in any
+// inter-pod affinity or anti-affinity terms across the cluster snapshot.
+func (s *Snapshot) AffinityLabelKeys() []string {
+	return s.sortedAllAffinityLabelKeys
+}
+
 func (s *Snapshot) IsPVCUsedByPods(key string) bool {
 	return s.usedPVCRefCounts[key] > 0
 }
@@ -580,6 +628,7 @@ func (s *Snapshot) AssumePod(podInfo *framework.PodInfo) error {
 	for pvcKey := range framework.PodPVCKeys(pod) {
 		s.usedPVCRefCounts[pvcKey]++
 	}
+	s.addAffinityLabelKeys(pod)
 	s.assumedPodStates[key] = state
 	s.assumedPodKeys = append(s.assumedPodKeys, key)
 	// Update the pod group state in the snapshot if the pod belongs to a pod group.
@@ -621,6 +670,7 @@ func (s *Snapshot) ForgetPod(logger klog.Logger, pod *v1.Pod) error {
 		utilruntime.HandleErrorWithLogger(logger, nil, "Cannot remove assumed pod key on ForgetPod: the pod is not the last assumed one", "pod", klog.KObj(pod))
 	}
 	assumedPod := state.pod
+	s.removeAffinityLabelKeys(assumedPod)
 	nodeName := assumedPod.Spec.NodeName
 	if nodeInfo, ok := s.nodeInfoMap[nodeName]; ok {
 		// Calling RemovePod increases the Generation number of the nodeInfo.
@@ -985,4 +1035,24 @@ func (s *Snapshot) getOrCreateCompositePodGroupState(key fwk.EntityKey) *composi
 		s.compositePodGroupStates[key] = cpgs
 	}
 	return cpgs
+}
+
+func (s *Snapshot) addAffinityLabelKeys(pod *v1.Pod) {
+	changedReq, changedPref := addAffinityLabelKeysToCounts(pod, s.requiredAntiAffinityLabelKeyRefCounts, s.preferredAffinityLabelKeyRefCounts)
+	if changedReq {
+		s.sortedRequiredAntiAffinityLabelKeys = sortedKeysFromMap(s.requiredAntiAffinityLabelKeyRefCounts)
+	}
+	if changedReq || changedPref {
+		s.sortedAllAffinityLabelKeys = sortedUnionKeysFromMaps(s.requiredAntiAffinityLabelKeyRefCounts, s.preferredAffinityLabelKeyRefCounts)
+	}
+}
+
+func (s *Snapshot) removeAffinityLabelKeys(pod *v1.Pod) {
+	changedReq, changedPref := removeAffinityLabelKeysFromCounts(pod, s.requiredAntiAffinityLabelKeyRefCounts, s.preferredAffinityLabelKeyRefCounts)
+	if changedReq {
+		s.sortedRequiredAntiAffinityLabelKeys = sortedKeysFromMap(s.requiredAntiAffinityLabelKeyRefCounts)
+	}
+	if changedReq || changedPref {
+		s.sortedAllAffinityLabelKeys = sortedUnionKeysFromMaps(s.requiredAntiAffinityLabelKeyRefCounts, s.preferredAffinityLabelKeyRefCounts)
+	}
 }

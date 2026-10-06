@@ -38,6 +38,8 @@ import (
 
 type podDef struct {
 	name                string
+	labels              map[string]string
+	podAntiAffinity     *v1.PodAntiAffinity
 	nodeSelector        map[string]string
 	nodeAffinity        []string
 	expectedNode        string
@@ -384,6 +386,61 @@ func TestBatchScenarios(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "metadata labels batch together and new anti-affinity rule breaks batch",
+			pods: []podDef{
+				{
+					name:         "lbl-batchp1",
+					labels:       map[string]string{"job-completion-index": "1"},
+					expectedNode: "lbl-batchn1",
+					nodeAffinity: []string{"lbl-batchn1", "lbl-batchn2", "lbl-batchn3"},
+				},
+				{
+					name:          "lbl-batchp2",
+					labels:        map[string]string{"job-completion-index": "2"},
+					expectedNode:  "lbl-batchn1",
+					nodeAffinity:  []string{"lbl-batchn1", "lbl-batchn2", "lbl-batchn3"},
+					expectBatched: true,
+				},
+				{
+					name:         "lbl-anti-p",
+					expectedNode: "lbl-batchn3",
+					nodeAffinity: []string{"lbl-batchn3"},
+					podAntiAffinity: &v1.PodAntiAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+							{
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{"app": "worker"},
+								},
+								TopologyKey: "kubernetes.io/hostname",
+							},
+						},
+					},
+					expectBatched: false,
+				},
+				{
+					name:          "lbl-batchp3",
+					labels:        map[string]string{"job-completion-index": "3", "app": "worker"},
+					expectedNode:  "lbl-batchn2",
+					nodeAffinity:  []string{"lbl-batchn1", "lbl-batchn2"},
+					expectBatched: false,
+				},
+			},
+			nodes: []nodeDef{
+				{
+					name:    "lbl-batchn1",
+					maxPods: 2,
+				},
+				{
+					name:    "lbl-batchn2",
+					maxPods: 2,
+				},
+				{
+					name:    "lbl-batchn3",
+					maxPods: 2,
+				},
+			},
+		},
 	}
 
 	for _, tt := range table {
@@ -494,6 +551,15 @@ func newPod(d *podDef, ns string) *v1.Pod {
 
 	if d.priority != 0 {
 		ret.Spec.Priority = &d.priority
+	}
+	if d.labels != nil {
+		ret.Labels = d.labels
+	}
+	if d.podAntiAffinity != nil {
+		if ret.Spec.Affinity == nil {
+			ret.Spec.Affinity = &v1.Affinity{}
+		}
+		ret.Spec.Affinity.PodAntiAffinity = d.podAntiAffinity
 	}
 
 	return ret

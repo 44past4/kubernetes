@@ -3811,3 +3811,104 @@ func TestCache_HavePodsWithRequiredNonHostScopedAntiAffinity(t *testing.T) {
 		}
 	}
 }
+
+func TestCacheAffinityLabelKeys(t *testing.T) {
+	logger, ctx := ktesting.NewTestContext(t)
+	cache := newCache(ctx, time.Second, nil, false, false)
+	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node1"}}
+	cache.AddNode(logger, node)
+
+	pod1 := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", UID: "pod1"},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+			Affinity: &v1.Affinity{
+				PodAntiAffinity: &v1.PodAntiAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+						{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"app": "foo"},
+							},
+						},
+					},
+					PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+						{
+							Weight: 10,
+							PodAffinityTerm: v1.PodAffinityTerm{
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{"tier": "frontend"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := cache.AddPod(logger, pod1); err != nil {
+		t.Fatalf("AddPod failed: %v", err)
+	}
+
+	snapshot := NewEmptySnapshot()
+	if err := cache.UpdateSnapshot(logger, snapshot); err != nil {
+		t.Fatalf("UpdateSnapshot failed: %v", err)
+	}
+
+	if diff := cmp.Diff([]string{"app"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"app", "tier"}, snapshot.AffinityLabelKeys()); diff != "" {
+		t.Fatalf("AffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+
+	// Update pod1: change required anti-affinity key to "zone", drop preferred
+	pod1Updated := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", UID: "pod1"},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+			Affinity: &v1.Affinity{
+				PodAntiAffinity: &v1.PodAntiAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+						{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"zone": "east"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := cache.UpdatePod(logger, pod1, pod1Updated); err != nil {
+		t.Fatalf("UpdatePod failed: %v", err)
+	}
+
+	if err := cache.UpdateSnapshot(logger, snapshot); err != nil {
+		t.Fatalf("UpdateSnapshot failed: %v", err)
+	}
+
+	if diff := cmp.Diff([]string{"zone"}, snapshot.RequiredAntiAffinityLabelKeys()); diff != "" {
+		t.Fatalf("after UpdatePod, RequiredAntiAffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"zone"}, snapshot.AffinityLabelKeys()); diff != "" {
+		t.Fatalf("after UpdatePod, AffinityLabelKeys mismatch (-want +got):\n%s", diff)
+	}
+
+	// Remove pod1Updated
+	if err := cache.RemovePod(logger, pod1Updated); err != nil {
+		t.Fatalf("RemovePod failed: %v", err)
+	}
+
+	if err := cache.UpdateSnapshot(logger, snapshot); err != nil {
+		t.Fatalf("UpdateSnapshot failed: %v", err)
+	}
+
+	if len(snapshot.RequiredAntiAffinityLabelKeys()) != 0 {
+		t.Fatalf("expected 0 req anti keys after removal, got %v", snapshot.RequiredAntiAffinityLabelKeys())
+	}
+	if len(snapshot.AffinityLabelKeys()) != 0 {
+		t.Fatalf("expected 0 affinity keys after removal, got %v", snapshot.AffinityLabelKeys())
+	}
+}

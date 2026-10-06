@@ -481,3 +481,92 @@ func TestGenericPodGroup_GetMinCount(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractAffinityLabelKeys(t *testing.T) {
+	tests := []struct {
+		name            string
+		pod             *v1.Pod
+		wantReqAntiKeys sets.Set[string]
+		wantPrefKeys    sets.Set[string]
+	}{
+		{
+			name:            "nil pod or nil affinity",
+			pod:             &v1.Pod{},
+			wantReqAntiKeys: nil,
+			wantPrefKeys:    nil,
+		},
+		{
+			name: "required anti-affinity with matchLabels, matchExpressions, and matchLabelKeys",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Affinity: &v1.Affinity{
+						PodAntiAffinity: &v1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+								{
+									LabelSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"app": "foo"},
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{Key: "tier", Operator: metav1.LabelSelectorOpIn, Values: []string{"backend"}},
+											{Key: "security", Operator: metav1.LabelSelectorOpDoesNotExist},
+										},
+									},
+									MatchLabelKeys:    []string{"slice"},
+									MismatchLabelKeys: []string{"zone"},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantReqAntiKeys: sets.New("app", "tier", "security", "slice", "zone"),
+			wantPrefKeys:    nil,
+		},
+		{
+			name: "preferred affinity and anti-affinity terms",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					Affinity: &v1.Affinity{
+						PodAffinity: &v1.PodAffinity{
+							PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+								{
+									Weight: 10,
+									PodAffinityTerm: v1.PodAffinityTerm{
+										LabelSelector: &metav1.LabelSelector{
+											MatchLabels: map[string]string{"service": "cache"},
+										},
+									},
+								},
+							},
+						},
+						PodAntiAffinity: &v1.PodAntiAffinity{
+							PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+								{
+									Weight: 20,
+									PodAffinityTerm: v1.PodAffinityTerm{
+										LabelSelector: &metav1.LabelSelector{
+											MatchLabels: map[string]string{"workload": "batch"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantReqAntiKeys: nil,
+			wantPrefKeys:    sets.New("service", "workload"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotReq, gotPref := ExtractAffinityLabelKeys(tt.pod)
+			if diff := cmp.Diff(tt.wantReqAntiKeys, gotReq); diff != "" {
+				t.Errorf("ExtractAffinityLabelKeys() reqAnti diff (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantPrefKeys, gotPref); diff != "" {
+				t.Errorf("ExtractAffinityLabelKeys() pref diff (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

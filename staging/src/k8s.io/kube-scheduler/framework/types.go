@@ -527,6 +527,52 @@ func GetPodAntiAffinityTerms(affinity *v1.Affinity) (terms []v1.PodAffinityTerm)
 	return terms
 }
 
+// ExtractAffinityLabelKeys extracts label keys referenced in required anti-affinity terms
+// and preferred (anti-)affinity terms of the given pod.
+func ExtractAffinityLabelKeys(pod *v1.Pod) (reqAntiKeys sets.Set[string], prefKeys sets.Set[string]) {
+	if pod == nil || pod.Spec.Affinity == nil {
+		return nil, nil
+	}
+	if anti := pod.Spec.Affinity.PodAntiAffinity; anti != nil {
+		for i := range anti.RequiredDuringSchedulingIgnoredDuringExecution {
+			reqAntiKeys = insertKeysFromTerm(reqAntiKeys, &anti.RequiredDuringSchedulingIgnoredDuringExecution[i])
+		}
+		for i := range anti.PreferredDuringSchedulingIgnoredDuringExecution {
+			prefKeys = insertKeysFromTerm(prefKeys, &anti.PreferredDuringSchedulingIgnoredDuringExecution[i].PodAffinityTerm)
+		}
+	}
+	if aff := pod.Spec.Affinity.PodAffinity; aff != nil {
+		for i := range aff.PreferredDuringSchedulingIgnoredDuringExecution {
+			prefKeys = insertKeysFromTerm(prefKeys, &aff.PreferredDuringSchedulingIgnoredDuringExecution[i].PodAffinityTerm)
+		}
+	}
+	return reqAntiKeys, prefKeys
+}
+
+func insertKeysFromTerm(s sets.Set[string], term *v1.PodAffinityTerm) sets.Set[string] {
+	if term == nil {
+		return s
+	}
+	if s == nil {
+		s = sets.New[string]()
+	}
+	if term.LabelSelector != nil {
+		for k := range term.LabelSelector.MatchLabels {
+			s.Insert(k)
+		}
+		for _, expr := range term.LabelSelector.MatchExpressions {
+			s.Insert(expr.Key)
+		}
+	}
+	for _, k := range term.MatchLabelKeys {
+		s.Insert(k)
+	}
+	for _, k := range term.MismatchLabelKeys {
+		s.Insert(k)
+	}
+	return s
+}
+
 // Resource is a collection of compute resources.
 type Resource interface {
 	GetMilliCPU() int64

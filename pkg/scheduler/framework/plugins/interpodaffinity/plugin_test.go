@@ -347,12 +347,13 @@ func TestPodAffinitySignature(t *testing.T) {
 	tests := []struct {
 		name              string
 		pod               *v1.Pod
+		clusterPods       []*v1.Pod
 		expectedSignature []fwk.SignFragment
 		schedulable       bool
 		config            config.InterPodAffinityArgs
 	}{
 		{
-			name: "no affinity, default settings",
+			name: "no affinity in cluster, default settings filters out unreferenced labels",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"foo": "bar"},
@@ -361,19 +362,25 @@ func TestPodAffinitySignature(t *testing.T) {
 			},
 			expectedSignature: []fwk.SignFragment{
 				{
-					Key:   fwk.LabelsSignerName,
-					Value: map[string]string{"foo": "bar"},
+					Key:   fwk.LabelsFilterKeysSignerName,
+					Value: []string{},
 				},
 			},
 			schedulable: true,
 		},
 		{
-			name: "no affinity, ignore setting set",
+			name: "no affinity in cluster, ignore setting set",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"foo": "bar"},
 				},
 				Spec: v1.PodSpec{},
+			},
+			expectedSignature: []fwk.SignFragment{
+				{
+					Key:   fwk.LabelsFilterKeysSignerName,
+					Value: []string{},
+				},
 			},
 			schedulable: true,
 			config: config.InterPodAffinityArgs{
@@ -381,7 +388,7 @@ func TestPodAffinitySignature(t *testing.T) {
 			},
 		},
 		{
-			name: "affinity set",
+			name: "affinity set on incoming pod",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"foo": "bar"},
@@ -398,6 +405,159 @@ func TestPodAffinitySignature(t *testing.T) {
 			},
 			schedulable: false,
 		},
+		{
+			name: "cluster has required anti-affinity on app, incoming pod matches app and has extra label",
+			clusterPods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "c-pod", Namespace: "default"},
+					Spec: v1.PodSpec{
+						Affinity: &v1.Affinity{
+							PodAntiAffinity: &v1.PodAntiAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+									{
+										LabelSelector: &metav1.LabelSelector{
+											MatchLabels: map[string]string{"app": "web"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "web", "job-completion-index": "1"},
+				},
+				Spec: v1.PodSpec{},
+			},
+			expectedSignature: []fwk.SignFragment{
+				{
+					Key:   fwk.LabelsFilterKeysSignerName,
+					Value: []string{"app"},
+				},
+				{
+					Key:   fwk.LabelsSignerName,
+					Value: map[string]string{"app": "web"},
+				},
+			},
+			schedulable: true,
+		},
+		{
+			name: "cluster has required anti-affinity on app, incoming pod does not have app label",
+			clusterPods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "c-pod", Namespace: "default"},
+					Spec: v1.PodSpec{
+						Affinity: &v1.Affinity{
+							PodAntiAffinity: &v1.PodAntiAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: []v1.PodAffinityTerm{
+									{
+										LabelSelector: &metav1.LabelSelector{
+											MatchLabels: map[string]string{"app": "web"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"job-completion-index": "2"},
+				},
+				Spec: v1.PodSpec{},
+			},
+			expectedSignature: []fwk.SignFragment{
+				{
+					Key:   fwk.LabelsFilterKeysSignerName,
+					Value: []string{"app"},
+				},
+			},
+			schedulable: true,
+		},
+		{
+			name: "cluster has preferred affinity on tier, default settings includes tier in filter",
+			clusterPods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "c-pod", Namespace: "default"},
+					Spec: v1.PodSpec{
+						Affinity: &v1.Affinity{
+							PodAffinity: &v1.PodAffinity{
+								PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+									{
+										Weight: 10,
+										PodAffinityTerm: v1.PodAffinityTerm{
+											LabelSelector: &metav1.LabelSelector{
+												MatchLabels: map[string]string{"tier": "cache"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"tier": "cache", "worker-id": "w1"},
+				},
+				Spec: v1.PodSpec{},
+			},
+			expectedSignature: []fwk.SignFragment{
+				{
+					Key:   fwk.LabelsFilterKeysSignerName,
+					Value: []string{"tier"},
+				},
+				{
+					Key:   fwk.LabelsSignerName,
+					Value: map[string]string{"tier": "cache"},
+				},
+			},
+			schedulable: true,
+		},
+		{
+			name: "cluster has preferred affinity on tier, IgnorePreferredTermsOfExistingPods ignores tier",
+			clusterPods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "c-pod", Namespace: "default"},
+					Spec: v1.PodSpec{
+						Affinity: &v1.Affinity{
+							PodAffinity: &v1.PodAffinity{
+								PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+									{
+										Weight: 10,
+										PodAffinityTerm: v1.PodAffinityTerm{
+											LabelSelector: &metav1.LabelSelector{
+												MatchLabels: map[string]string{"tier": "cache"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"tier": "cache", "worker-id": "w1"},
+				},
+				Spec: v1.PodSpec{},
+			},
+			expectedSignature: []fwk.SignFragment{
+				{
+					Key:   fwk.LabelsFilterKeysSignerName,
+					Value: []string{},
+				},
+			},
+			schedulable: true,
+			config: config.InterPodAffinityArgs{
+				IgnorePreferredTermsOfExistingPods: true,
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -406,7 +566,7 @@ func TestPodAffinitySignature(t *testing.T) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
-			snapshot := cache.NewSnapshot(nil, nil)
+			snapshot := cache.NewSnapshot(test.clusterPods, nil)
 			pl := plugintesting.SetupPluginWithInformers(ctx, t, schedruntime.FactoryAdapter(feature.Features{}, New), &test.config, snapshot, namespaces)
 			p := pl.(*InterPodAffinity)
 			signature, status := p.SignPod(ctx, test.pod)
