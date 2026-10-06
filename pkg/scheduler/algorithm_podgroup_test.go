@@ -3155,7 +3155,7 @@ func TestScorePlacementPodGroupAssignments(t *testing.T) {
 			}
 
 			podGroupAlgorithm := testPodGroupAlgorithm(t, ctx, snapshot, nil, queue)
-			_, status := podGroupAlgorithm.findBestCompositePodGroupPlacement(ctx, schedFwk, framework.NewCycleState(), root, successfulResults)
+			_, _, status := podGroupAlgorithm.findBestCompositePodGroupPlacement(ctx, schedFwk, framework.NewCycleState(), root, successfulResults)
 			if !status.IsSuccess() {
 				t.Fatalf("Expected findBestCompositePodGroupPlacement to succeed, got status: %v", status)
 			}
