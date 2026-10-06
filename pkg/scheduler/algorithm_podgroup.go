@@ -552,22 +552,12 @@ func (p *PodGroupSchedulingAlgorithm) podGroupSchedulingPlacementAlgorithm(ctx c
 	if cpgCache != nil && !cpgCache.isPopulated && !nominatedFeasible {
 		cpgCache.lastScheduledPlacement = bestPlacement.Name
 		clear(cpgCache.feasiblePlacements)
-		clear(cpgCache.scores)
-		clear(cpgCache.cachedAssignments)
-		clear(cpgCache.cachedPlacementStates)
+		clear(cpgCache.placementScores)
 		for _, pl := range placements {
-			if res, ok := successfulResults[pl]; ok {
-				cpgCache.feasiblePlacements[pl.Name] = true
-				cpgCache.cachedAssignments[pl.Name] = &fwk.PodGroupAssignments{
-					Placement:           pl,
-					ProposedAssignments: makeProposedAssignments(res),
-				}
-				cpgCache.cachedPlacementStates[pl.Name] = res.placementCycleState
-			} else {
-				cpgCache.feasiblePlacements[pl.Name] = false
-			}
+			_, ok := successfulResults[pl]
+			cpgCache.feasiblePlacements[pl.Name] = ok
 		}
-		maps.Copy(cpgCache.scores, scoresMap)
+		maps.Copy(cpgCache.placementScores, scoresMap)
 		cpgCache.isPopulated = true
 	}
 
@@ -703,22 +693,12 @@ func (p *PodGroupSchedulingAlgorithm) compositePodGroupSchedulingPlacementAlgori
 	if cpgCache != nil && !cpgCache.isPopulated && !nominatedFeasible {
 		cpgCache.lastScheduledPlacement = bestPlacement.Name
 		clear(cpgCache.feasiblePlacements)
-		clear(cpgCache.scores)
-		clear(cpgCache.cachedAssignments)
-		clear(cpgCache.cachedPlacementStates)
+		clear(cpgCache.placementScores)
 		for _, pl := range placements {
-			if subtreeRes, ok := successfulResults[pl]; ok {
-				cpgCache.feasiblePlacements[pl.Name] = true
-				cpgCache.cachedAssignments[pl.Name] = &fwk.PodGroupAssignments{
-					Placement:           pl,
-					ProposedAssignments: makeCompositeProposedAssignments(podGroupInfo, subtreeRes),
-				}
-				cpgCache.cachedPlacementStates[pl.Name] = subtreeRes[podGroupInfo.GetKey()].placementCycleState
-			} else {
-				cpgCache.feasiblePlacements[pl.Name] = false
-			}
+			_, ok := successfulResults[pl]
+			cpgCache.feasiblePlacements[pl.Name] = ok
 		}
-		maps.Copy(cpgCache.scores, scoresMap)
+		maps.Copy(cpgCache.placementScores, scoresMap)
 		cpgCache.isPopulated = true
 	}
 
@@ -813,10 +793,15 @@ func (p *PodGroupSchedulingAlgorithm) findBestPodGroupPlacement(ctx context.Cont
 	return bestPlacement, status
 }
 
-func (p *PodGroupSchedulingAlgorithm) findBestPodGroupPlacementWithScores(ctx context.Context, schedFwk framework.Framework, podGroupCycleState fwk.PodGroupCycleState, podGroupInfo *framework.PodGroupInfo, successfulResults map[*fwk.Placement]*PodGroupScheduledResult) (*fwk.Placement, map[string]int64, *fwk.Status) {
+func (p *PodGroupSchedulingAlgorithm) findBestPodGroupPlacementWithScores(ctx context.Context, schedFwk framework.Framework, podGroupCycleState fwk.PodGroupCycleState, podGroupInfo *framework.PodGroupInfo, successfulResults map[*fwk.Placement]*PodGroupScheduledResult) (*fwk.Placement, map[string]fwk.PlacementPluginScores, *fwk.Status) {
 	if len(successfulResults) == 1 {
 		for placement := range successfulResults {
-			return placement, map[string]int64{placement.Name: 100}, nil
+			return placement, map[string]fwk.PlacementPluginScores{
+				placement.Name: {
+					Placement:  placement,
+					TotalScore: fwk.MaxScore,
+				},
+			}, nil
 		}
 	}
 
@@ -832,10 +817,15 @@ func (p *PodGroupSchedulingAlgorithm) findBestCompositePodGroupPlacement(ctx con
 	return bestPlacement, status
 }
 
-func (p *PodGroupSchedulingAlgorithm) findBestCompositePodGroupPlacementWithScores(ctx context.Context, schedFwk framework.Framework, podGroupCycleState fwk.PodGroupCycleState, podGroupInfo *framework.PodGroupInfo, successfulResults map[*fwk.Placement]map[fwk.EntityKey]*PodGroupScheduledResult) (*fwk.Placement, map[string]int64, *fwk.Status) {
+func (p *PodGroupSchedulingAlgorithm) findBestCompositePodGroupPlacementWithScores(ctx context.Context, schedFwk framework.Framework, podGroupCycleState fwk.PodGroupCycleState, podGroupInfo *framework.PodGroupInfo, successfulResults map[*fwk.Placement]map[fwk.EntityKey]*PodGroupScheduledResult) (*fwk.Placement, map[string]fwk.PlacementPluginScores, *fwk.Status) {
 	if len(successfulResults) == 1 {
 		for placement := range successfulResults {
-			return placement, map[string]int64{placement.Name: 100}, nil
+			return placement, map[string]fwk.PlacementPluginScores{
+				placement.Name: {
+					Placement:  placement,
+					TotalScore: fwk.MaxScore,
+				},
+			}, nil
 		}
 	}
 
@@ -941,7 +931,7 @@ func (p *PodGroupSchedulingAlgorithm) findBestPlacement(ctx context.Context, sch
 	return bestPlacement, status
 }
 
-func (p *PodGroupSchedulingAlgorithm) findBestPlacementWithScores(ctx context.Context, schedFwk framework.Framework, podGroupCycleState fwk.PodGroupCycleState, podGroupInfo *framework.PodGroupInfo, placementPodGroupAssignments []*fwk.PodGroupAssignments, placementStates []fwk.PlacementCycleState) (*fwk.Placement, map[string]int64, *fwk.Status) {
+func (p *PodGroupSchedulingAlgorithm) findBestPlacementWithScores(ctx context.Context, schedFwk framework.Framework, podGroupCycleState fwk.PodGroupCycleState, podGroupInfo *framework.PodGroupInfo, placementPodGroupAssignments []*fwk.PodGroupAssignments, placementStates []fwk.PlacementCycleState) (*fwk.Placement, map[string]fwk.PlacementPluginScores, *fwk.Status) {
 	scores, status := schedFwk.RunPlacementScorePlugins(ctx, podGroupCycleState, podGroupInfo, placementPodGroupAssignments, placementStates)
 	if !status.IsSuccess() {
 		return nil, nil, status
@@ -961,9 +951,9 @@ func (p *PodGroupSchedulingAlgorithm) findBestPlacementWithScores(ctx context.Co
 		}
 	}
 
-	scoresMap := make(map[string]int64, len(scores))
+	scoresMap := make(map[string]fwk.PlacementPluginScores, len(scores))
 	for _, score := range scores {
-		scoresMap[score.Placement.Name] = score.TotalScore
+		scoresMap[score.Placement.Name] = score
 	}
 
 	bestScore := &scores[0]
@@ -1108,10 +1098,8 @@ func (p *PodGroupSchedulingAlgorithm) compositePodGroupSchedulingDefaultAlgorith
 	if utilfeature.DefaultFeatureGate.Enabled(features.TopologyAwareCompositePodGroupOptimization) {
 		if areChildPodGroupsIdentical(ctx, schedFwk, podGroupInfo.Children()) {
 			cpgCache := &cpgChildrenPlacementCache{
-				feasiblePlacements:    make(map[string]bool),
-				scores:                make(map[string]int64),
-				cachedAssignments:     make(map[string]*fwk.PodGroupAssignments),
-				cachedPlacementStates: make(map[string]fwk.PlacementCycleState),
+				feasiblePlacements: make(map[string]bool),
+				placementScores:    make(map[string]fwk.PlacementPluginScores),
 			}
 			placementCycleState.Write(cpgChildrenPlacementCacheKey, cpgCache)
 		}
@@ -1232,15 +1220,13 @@ func SuccessfulLeafResults(root *framework.PodGroupInfo, results map[fwk.EntityK
 
 const cpgChildrenPlacementCacheKey = fwk.StateKey("cpgChildrenPlacementCache")
 
-// cpgChildrenPlacementCache caches placement feasibility, assignments, and scores across identical child pod groups
+// cpgChildrenPlacementCache caches placement feasibility and scores across identical child pod groups
 // of a CompositePodGroup during a topology-aware scheduling cycle.
 type cpgChildrenPlacementCache struct {
 	isPopulated            bool
 	lastScheduledPlacement string
 	feasiblePlacements     map[string]bool
-	scores                 map[string]int64
-	cachedAssignments      map[string]*fwk.PodGroupAssignments
-	cachedPlacementStates  map[string]fwk.PlacementCycleState
+	placementScores        map[string]fwk.PlacementPluginScores
 }
 
 func (c *cpgChildrenPlacementCache) Clone() fwk.StateData {
@@ -1251,14 +1237,14 @@ func (c *cpgChildrenPlacementCache) Clone() fwk.StateData {
 		isPopulated:            c.isPopulated,
 		lastScheduledPlacement: c.lastScheduledPlacement,
 		feasiblePlacements:     make(map[string]bool, len(c.feasiblePlacements)),
-		scores:                 make(map[string]int64, len(c.scores)),
-		cachedAssignments:      make(map[string]*fwk.PodGroupAssignments, len(c.cachedAssignments)),
-		cachedPlacementStates:  make(map[string]fwk.PlacementCycleState, len(c.cachedPlacementStates)),
+		placementScores:        make(map[string]fwk.PlacementPluginScores, len(c.placementScores)),
 	}
 	maps.Copy(clone.feasiblePlacements, c.feasiblePlacements)
-	maps.Copy(clone.scores, c.scores)
-	maps.Copy(clone.cachedAssignments, c.cachedAssignments)
-	maps.Copy(clone.cachedPlacementStates, c.cachedPlacementStates)
+	for k, v := range c.placementScores {
+		v.Scores = slices.Clone(v.Scores)
+		v.RawScores = slices.Clone(v.RawScores)
+		clone.placementScores[k] = v
+	}
 	return clone
 }
 
@@ -1420,14 +1406,14 @@ func (p *PodGroupSchedulingAlgorithm) podGroupSchedulingPlacementAlgorithmWithCa
 		}
 		if pLastResult.status.IsSuccess() {
 			cpgCache.feasiblePlacements[pLast.Name] = true
-			cpgCache.cachedAssignments[pLast.Name] = &fwk.PodGroupAssignments{
+			pLastAssignments := &fwk.PodGroupAssignments{
 				Placement:           pLast,
 				ProposedAssignments: makeProposedAssignments(pLastResult),
 			}
-			cpgCache.cachedPlacementStates[pLast.Name] = pLastResult.placementCycleState
-			p.recalculateCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
+			p.recalculateCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache, pLastAssignments, pLastResult.placementCycleState)
 		} else {
 			invalidateCachedPlacement(cpgCache, pLast.Name)
+			p.renormalizeCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
 		}
 	}
 
@@ -1446,11 +1432,6 @@ func (p *PodGroupSchedulingAlgorithm) podGroupSchedulingPlacementAlgorithmWithCa
 		}
 		if pCandidateResult.status.IsSuccess() {
 			cpgCache.lastScheduledPlacement = pCandidate.Name
-			cpgCache.cachedAssignments[pCandidate.Name] = &fwk.PodGroupAssignments{
-				Placement:           pCandidate,
-				ProposedAssignments: makeProposedAssignments(pCandidateResult),
-			}
-			cpgCache.cachedPlacementStates[pCandidate.Name] = pCandidateResult.placementCycleState
 			return pCandidateResult
 		}
 		invalidateCachedPlacement(cpgCache, pCandidate.Name)
@@ -1511,14 +1492,14 @@ func (p *PodGroupSchedulingAlgorithm) compositePodGroupSchedulingPlacementAlgori
 		}
 		if pLastResult.status.IsSuccess() {
 			cpgCache.feasiblePlacements[pLast.Name] = true
-			cpgCache.cachedAssignments[pLast.Name] = &fwk.PodGroupAssignments{
+			pLastAssignments := &fwk.PodGroupAssignments{
 				Placement:           pLast,
 				ProposedAssignments: makeCompositeProposedAssignments(podGroupInfo, pLastSubtree),
 			}
-			cpgCache.cachedPlacementStates[pLast.Name] = pLastResult.placementCycleState
-			p.recalculateCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
+			p.recalculateCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache, pLastAssignments, pLastResult.placementCycleState)
 		} else {
 			invalidateCachedPlacement(cpgCache, pLast.Name)
+			p.renormalizeCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
 		}
 	}
 
@@ -1539,11 +1520,6 @@ func (p *PodGroupSchedulingAlgorithm) compositePodGroupSchedulingPlacementAlgori
 		}
 		if pCandidateResult.status.IsSuccess() {
 			cpgCache.lastScheduledPlacement = pCandidate.Name
-			cpgCache.cachedAssignments[pCandidate.Name] = &fwk.PodGroupAssignments{
-				Placement:           pCandidate,
-				ProposedAssignments: makeCompositeProposedAssignments(podGroupInfo, pCandidateSubtree),
-			}
-			cpgCache.cachedPlacementStates[pCandidate.Name] = pCandidateResult.placementCycleState
 			maps.Copy(results, pCandidateSubtree)
 			return pCandidateResult
 		}
@@ -1572,7 +1548,7 @@ func selectBestCachedPlacement(cpgCache *cpgChildrenPlacementCache, placementByN
 		if !feasible {
 			continue
 		}
-		score := cpgCache.scores[name]
+		score := cpgCache.placementScores[name].TotalScore
 		if !hasCandidate || score > candidateScore || (score == candidateScore && name < candidateName) {
 			candidateName = name
 			candidateScore = score
@@ -1587,14 +1563,34 @@ func selectBestCachedPlacement(cpgCache *cpgChildrenPlacementCache, placementByN
 
 func invalidateCachedPlacement(cpgCache *cpgChildrenPlacementCache, name string) {
 	cpgCache.feasiblePlacements[name] = false
-	delete(cpgCache.scores, name)
-	delete(cpgCache.cachedAssignments, name)
-	delete(cpgCache.cachedPlacementStates, name)
+	delete(cpgCache.placementScores, name)
 }
 
-// recalculateCachedScores runs PlacementScore plugins across all cached feasible placements
-// to update their scores holistically on the same scale.
+// recalculateCachedScores runs raw PlacementScore plugins only on the newly evaluated placement
+// and re-normalizes scores across all cached feasible placements.
 func (p *PodGroupSchedulingAlgorithm) recalculateCachedScores(
+	ctx context.Context,
+	schedFwk framework.Framework,
+	podGroupCycleState fwk.PodGroupCycleState,
+	podGroupInfo *framework.PodGroupInfo,
+	cpgCache *cpgChildrenPlacementCache,
+	pLastAssignments *fwk.PodGroupAssignments,
+	pLastState fwk.PlacementCycleState,
+) {
+	rawScores, status := schedFwk.RunRawPlacementScorePlugins(ctx, pLastState, podGroupInfo, pLastAssignments)
+	if !status.IsSuccess() {
+		return
+	}
+	cpgCache.placementScores[pLastAssignments.Placement.Name] = fwk.PlacementPluginScores{
+		Placement: pLastAssignments.Placement,
+		RawScores: rawScores,
+	}
+	p.renormalizeCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
+}
+
+// renormalizeCachedScores runs NormalizePlacementScores across all cached feasible placements
+// using their cached RawScores to update their total scores on the same scale.
+func (p *PodGroupSchedulingAlgorithm) renormalizeCachedScores(
 	ctx context.Context,
 	schedFwk framework.Framework,
 	podGroupCycleState fwk.PodGroupCycleState,
@@ -1603,8 +1599,10 @@ func (p *PodGroupSchedulingAlgorithm) recalculateCachedScores(
 ) {
 	var names []string
 	for name, feasible := range cpgCache.feasiblePlacements {
-		if feasible && cpgCache.cachedAssignments[name] != nil {
-			names = append(names, name)
+		if feasible {
+			if _, ok := cpgCache.placementScores[name]; ok {
+				names = append(names, name)
+			}
 		}
 	}
 	slices.Sort(names)
@@ -1613,22 +1611,22 @@ func (p *PodGroupSchedulingAlgorithm) recalculateCachedScores(
 		return
 	}
 	if len(names) == 1 {
-		cpgCache.scores[names[0]] = 100
+		entry := cpgCache.placementScores[names[0]]
+		entry.TotalScore = fwk.MaxScore
+		cpgCache.placementScores[names[0]] = entry
 		return
 	}
 
-	var placementPodGroupAssignments []*fwk.PodGroupAssignments
-	var placementStates []fwk.PlacementCycleState
-	for _, name := range names {
-		placementPodGroupAssignments = append(placementPodGroupAssignments, cpgCache.cachedAssignments[name])
-		placementStates = append(placementStates, cpgCache.cachedPlacementStates[name])
+	scores := make([]fwk.PlacementPluginScores, len(names))
+	for i, name := range names {
+		scores[i] = cpgCache.placementScores[name]
 	}
 
-	scores, status := schedFwk.RunPlacementScorePlugins(ctx, podGroupCycleState, podGroupInfo, placementPodGroupAssignments, placementStates)
+	status := schedFwk.NormalizePlacementScores(ctx, podGroupCycleState, podGroupInfo, scores)
 	if !status.IsSuccess() {
 		return
 	}
 	for _, score := range scores {
-		cpgCache.scores[score.Placement.Name] = score.TotalScore
+		cpgCache.placementScores[score.Placement.Name] = score
 	}
 }
