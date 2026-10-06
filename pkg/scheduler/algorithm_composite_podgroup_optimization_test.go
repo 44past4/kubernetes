@@ -491,6 +491,7 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 		enableFeatureGate      bool
 		numChildren            int
 		nonIdenticalChildren   bool
+		nonIdenticalChildIndex int
 		incompatibleIntraPG    bool
 		podPerNode             bool
 		injectedFilterStatus   map[string]*fwk.Status
@@ -498,6 +499,7 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 		customChildScores      map[string]map[string]int64
 		normalizeFn            func(scores []fwk.PlacementScore) *fwk.Status
 		expectedHosts          map[string]string
+		expectedHostSets       map[string]sets.Set[string]
 		expectedMaxEvaluations map[string]int
 		expectedScoredCount    map[string]int
 		expectedNormalizeSizes map[string][]int
@@ -623,9 +625,9 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 					"placement4": 40,
 				},
 			},
-			expectedHosts: map[string]string{
-				"p1": "node1",
-				"p2": "node2",
+			expectedHostSets: map[string]sets.Set[string]{
+				"p1": sets.New("node1", "node2"),
+				"p2": sets.New("node2", "node3"),
 			},
 			expectedMaxEvaluations: map[string]int{
 				"p1": 8,
@@ -669,6 +671,31 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 			},
 		},
 		{
+			name:              "2 identical children - single feasible placement skips raw scoring and normalization on both children",
+			enableFeatureGate: true,
+			numChildren:       2,
+			podPerNode:        false,
+			customChildPlacements: map[string][]string{
+				"placement1": {"node1"},
+			},
+			expectedHosts: map[string]string{
+				"p1": "node1",
+				"p2": "node1",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 1,
+				"p2": 1,
+			},
+			expectedScoredCount: map[string]int{
+				"pg1": 0, // skipped when len(successfulResults) == 1
+				"pg2": 0, // skipped when countFeasiblePlacements(cpgCache) == 1
+			},
+			expectedNormalizeSizes: map[string][]int{
+				"pg1": {},
+				"pg2": {},
+			},
+		},
+		{
 			name:              "2 identical children - validation failure triggers fallback",
 			enableFeatureGate: true,
 			numChildren:       2,
@@ -700,6 +727,42 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 				"p1": 4,
 				"p2": 2, // checks node1, schedules on node2
 				"p3": 2, // checks node2, schedules on node3
+			},
+		},
+		{
+			name:                   "3 children with prefix match [A, A, B] - first 2 children batch, 3rd child flushes cache",
+			enableFeatureGate:      true,
+			numChildren:            3,
+			nonIdenticalChildIndex: 3,
+			podPerNode:             false,
+			expectedHosts: map[string]string{
+				"p1":       "node1",
+				"p2":       "node1",
+				"p3":       "node1",
+				"p3-extra": "node1",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 4, // evaluates all 4 placements and populates cache
+				"p2": 1, // batches with pg1 and only evaluates P_last (node1)!
+				"p3": 4, // differs from pg2, so flushes cache and evaluates all 4 placements
+			},
+		},
+		{
+			name:                   "3 children with suffix match [B, A, A] - 1st child uncached, 2nd and 3rd children batch",
+			enableFeatureGate:      true,
+			numChildren:            3,
+			nonIdenticalChildIndex: 1,
+			podPerNode:             false,
+			expectedHosts: map[string]string{
+				"p1":       "node1",
+				"p1-extra": "node1",
+				"p2":       "node1",
+				"p3":       "node1",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 4, // differs from pg2, evaluates all 4 placements
+				"p2": 4, // matches pg3, evaluates all 4 placements and populates cache
+				"p3": 1, // batches with pg2 and only evaluates P_last (node1)!
 			},
 		},
 		{
@@ -784,21 +847,18 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 
 				pgInfo := &framework.PodGroupInfo{
 					GenericPodGroup: fwk.NewGenericPodGroup(pg),
-					UnscheduledPods: []*v1.Pod{p},
 				}
-				if tt.nonIdenticalChildren && i == 2 {
-					// Add an extra pod to child 2 to break equivalence
-					extraPod, extraQpInfo := makeQueuedPodInfo("p2-extra", pgName, "1")
+				if (tt.nonIdenticalChildren && i == 2) || (tt.nonIdenticalChildIndex == i) {
+					// Add an extra pod to break equivalence for this child
+					extraPod, extraQpInfo := makeQueuedPodInfo(fmt.Sprintf("p%d-extra", i), pgName, "1")
 					pods = append(pods, extraPod)
 					queuedPodInfos = append(queuedPodInfos, extraQpInfo)
-					pgInfo.UnscheduledPods = append(pgInfo.UnscheduledPods, extraPod)
 				}
 				if tt.incompatibleIntraPG {
 					// Add a second pod with different CPU requests to each PodGroup
 					extraPod, extraQpInfo := makeQueuedPodInfo(fmt.Sprintf("p%d-extra", i), pgName, "2")
 					pods = append(pods, extraPod)
 					queuedPodInfos = append(queuedPodInfos, extraQpInfo)
-					pgInfo.UnscheduledPods = append(pgInfo.UnscheduledPods, extraPod)
 				}
 				childPGInfos = append(childPGInfos, pgInfo)
 			}
@@ -929,6 +989,11 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 			for podName, wantHost := range tt.expectedHosts {
 				if gotHosts[podName] != wantHost {
 					t.Errorf("Pod %s scheduled on host %q, want %q", podName, gotHosts[podName], wantHost)
+				}
+			}
+			for podName, wantHosts := range tt.expectedHostSets {
+				if !wantHosts.Has(gotHosts[podName]) {
+					t.Errorf("Pod %s scheduled on host %q, want one of %v", podName, gotHosts[podName], sets.List(wantHosts))
 				}
 			}
 
@@ -1105,7 +1170,6 @@ func TestCPGPlacementOptimization_ThreeLevelCompositeChildrenCache(t *testing.T)
 
 					leafPGInfos = append(leafPGInfos, &framework.PodGroupInfo{
 						GenericPodGroup: fwk.NewGenericPodGroup(pg),
-						UnscheduledPods: []*v1.Pod{p},
 					})
 				}
 
@@ -1269,5 +1333,77 @@ func TestCPGPlacementOptimization_ThreeLevelCompositeChildrenCache(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestGetOrComputePodGroupSignature_ReusesQueuedPodSignature(t *testing.T) {
+	ctx, schedFwk := newSignTestFramework(t, true)
+
+	pg := st.MakePodGroup().Name("pg1").Obj()
+	p1 := st.MakePod().Name("p1").UID("p1").PodGroupName("pg1").Obj()
+	p2 := st.MakePod().Name("p2").UID("p2").PodGroupName("pg1").Obj()
+	// Give p2 a different spec (e.g. NodeSelector) so SignPod would fail if called,
+	// proving that precomputed PodSignatures on QueuedPodInfo are reused instead of re-signing.
+	p2.Spec.NodeSelector = map[string]string{"zone": "different"}
+
+	pInfo1, err := framework.NewPodInfo(p1)
+	if err != nil {
+		t.Fatalf("NewPodInfo: %v", err)
+	}
+	pInfo2, err := framework.NewPodInfo(p2)
+	if err != nil {
+		t.Fatalf("NewPodInfo: %v", err)
+	}
+
+	precomputedSig := fwk.PodSignature("precomputed-sig-123")
+	qp1 := &framework.QueuedPodInfo{PodInfo: pInfo1, PodSignature: precomputedSig}
+	qp2 := &framework.QueuedPodInfo{PodInfo: pInfo2, PodSignature: precomputedSig}
+
+	pgInfo := &framework.PodGroupInfo{
+		GenericPodGroup: fwk.NewGenericPodGroup(pg),
+	}
+	root := newQueuedPodGroupInfo(pgInfo, qp1, qp2)
+
+	sigCache := make(map[*framework.PodGroupInfo]fwk.PodSignature)
+	sig, ok := getOrComputePodGroupSignature(ctx, schedFwk, root, pgInfo, sigCache)
+	if !ok {
+		t.Fatalf("getOrComputePodGroupSignature() returned ok=false, want true when precomputed PodSignatures match")
+	}
+	if string(sig) != string(precomputedSig) {
+		t.Errorf("getOrComputePodGroupSignature() = %q, want %q", string(sig), string(precomputedSig))
+	}
+}
+
+func TestSelectBestCachedPlacement_RandomizerTieBreaker(t *testing.T) {
+	p1 := &fwk.Placement{Name: "placement1"}
+	p2 := &fwk.Placement{Name: "placement2"}
+	placementByName := map[string]*fwk.Placement{
+		"placement1": p1,
+		"placement2": p2,
+	}
+
+	cpgCache := &cpgChildrenPlacementCache{
+		isPopulated: true,
+		feasiblePlacements: map[string]bool{
+			"placement1": true,
+			"placement2": true,
+		},
+		placementScores: map[string]fwk.PlacementPluginScores{
+			"placement1": {
+				Placement:  p1,
+				TotalScore: 100,
+				Randomizer: 10,
+			},
+			"placement2": {
+				Placement:  p2,
+				TotalScore: 100,
+				Randomizer: 20, // Higher Randomizer wins tie despite lexicographically larger name
+			},
+		},
+	}
+
+	got := selectBestCachedPlacement(cpgCache, placementByName)
+	if got != p2 {
+		t.Errorf("selectBestCachedPlacement() = %v, want placement2 (higher Randomizer)", got)
 	}
 }
