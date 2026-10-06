@@ -499,6 +499,7 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 		incompatibleIntraPG    bool
 		podPerNode             bool
 		injectedFilterStatus   map[string]*fwk.Status
+		customChildPlacements  map[string][]string
 		customChildScores      map[string]map[string]int64
 		normalizeFn            func(scores []fwk.PlacementScore) *fwk.Status
 		expectedHosts          map[string]string
@@ -600,6 +601,76 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 			expectedNormalizeSizes: map[string][]int{
 				"pg1": {4},
 				"pg2": {4},
+			},
+		},
+		{
+			name:              "2 identical children - overlapping placements re-evaluated and re-scored without duplicate evaluation",
+			enableFeatureGate: true,
+			numChildren:       2,
+			podPerNode:        true,
+			customChildPlacements: map[string][]string{
+				"placement1": {"node1", "node2"},
+				"placement2": {"node2", "node3"}, // overlaps with placement1 on node2
+				"placement3": {"node3", "node4"}, // disjoint from placement1
+				"placement4": {"node4"},          // disjoint from placement1
+			},
+			customChildScores: map[string]map[string]int64{
+				"pg1": {
+					"placement1": 100,
+					"placement2": 80,
+					"placement3": 60,
+					"placement4": 40,
+				},
+				"pg2": {
+					"placement1": 50, // drops after node1 is used
+					"placement2": 90, // overlapping placement2 is re-scored and becomes best
+					"placement3": 60,
+					"placement4": 40,
+				},
+			},
+			expectedHosts: map[string]string{
+				"p1": "node1",
+				"p2": "node2",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 8,
+				"p2": 4, // evaluates placement1 (2 nodes) + placement2 (2 nodes), then reuses placement2 result without re-evaluating!
+			},
+			expectedScoredCount: map[string]int{
+				"pg1": 4,
+				"pg2": 2, // ScorePlacement called only for placement1 and overlapping placement2 (not placement3 or placement4)
+			},
+			expectedNormalizeSizes: map[string][]int{
+				"pg1": {4},
+				"pg2": {4}, // all 4 feasible placements are re-normalized
+			},
+		},
+		{
+			name:              "2 identical children - overlapping placement becomes infeasible and is invalidated before selecting non-overlapping candidate",
+			enableFeatureGate: true,
+			numChildren:       2,
+			podPerNode:        true,
+			customChildPlacements: map[string][]string{
+				"placement1": {"node1"},
+				"placement2": {"node1"}, // overlaps with placement1 on node1, so also becomes infeasible after p1 uses node1
+				"placement3": {"node3"}, // disjoint from placement1
+				"placement4": {"node4"}, // disjoint from placement1
+			},
+			expectedHosts: map[string]string{
+				"p1": "node1",
+				"p2": "node3",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 4,
+				"p2": 3, // evaluates placement1 (infeasible) + overlapping placement2 (infeasible), then validates non-overlapping placement3 (feasible)
+			},
+			expectedScoredCount: map[string]int{
+				"pg1": 4,
+				"pg2": 0, // both overlapping placements (placement1, placement2) are infeasible
+			},
+			expectedNormalizeSizes: map[string][]int{
+				"pg1": {4},
+				"pg2": {2}, // remaining 2 feasible placements (placement3, placement4) are re-normalized
 			},
 		},
 		{
@@ -742,12 +813,15 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 				Children:        childPGInfos,
 			}
 
-			// Generate 4 candidate placements, one per node
+			// Generate 4 candidate placements, one per node by default
 			childPlacements := map[string][]string{
 				"placement1": {nodes[0].Name},
 				"placement2": {nodes[1].Name},
 				"placement3": {nodes[2].Name},
 				"placement4": {nodes[3].Name},
+			}
+			if tt.customChildPlacements != nil {
+				childPlacements = tt.customChildPlacements
 			}
 			generatePlacementsResult := map[fwk.EntityKey]map[string][]string{
 				rootPGInfo.GetKey(): {

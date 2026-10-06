@@ -1768,54 +1768,59 @@ func (sched *Scheduler) podGroupSchedulingPlacementAlgorithmWithCache(
 	}
 
 	var (
-		pLast       *fwk.Placement
-		pLastResult *podGroupAlgorithmResult
+		pLast            *fwk.Placement
+		evaluatedResults map[*fwk.Placement]*podGroupAlgorithmResult
 	)
 	if cpgCache.lastScheduledPlacement != "" {
 		pLast = placementByName[cpgCache.lastScheduledPlacement]
 	}
 
 	if pLast != nil {
-		pLastResult = sched.evaluatePlacement(ctx, schedFwk, podGroupCycleState, podGroupInfo, queuedPodGroupInfo, pLast)
-		if pLastResult.status.IsError() {
-			return pLastResult, nil
-		}
-		if pLastResult.status.IsSuccess() {
-			cpgCache.feasiblePlacements[pLast.Name] = true
-			pLastAssignments := &fwk.PodGroupAssignments{
-				Placement:           pLast,
-				ProposedAssignments: makeProposedAssignments(pLastResult),
+		overlapping := findOverlappingFeasiblePlacements(pLast, placements, cpgCache)
+		evaluatedResults = make(map[*fwk.Placement]*podGroupAlgorithmResult, len(overlapping))
+		for _, p := range overlapping {
+			res := sched.evaluatePlacement(ctx, schedFwk, podGroupCycleState, podGroupInfo, queuedPodGroupInfo, p)
+			if res.status.IsError() {
+				return res, nil
 			}
-			sched.recalculateCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache, pLastAssignments, pLastResult.placementCycleState)
-		} else {
-			invalidateCachedPlacement(cpgCache, pLast.Name)
+			if res.status.IsSuccess() {
+				evaluatedResults[p] = res
+				cpgCache.feasiblePlacements[p.Name] = true
+				pAssignments := &fwk.PodGroupAssignments{
+					Placement:           p,
+					ProposedAssignments: makeProposedAssignments(res),
+				}
+				sched.updateCachedRawScore(ctx, schedFwk, podGroupInfo, cpgCache, pAssignments, res.placementCycleState)
+			} else {
+				invalidateCachedPlacement(cpgCache, p.Name)
+			}
+		}
+		if len(overlapping) > 0 {
 			sched.renormalizeCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
 		}
 	}
 
 	pCandidate := selectBestCachedPlacement(cpgCache, placementByName)
 
-	if pCandidate != nil && pLast != nil && pCandidate == pLast {
-		// pLast is the top-scoring candidate and was already evaluated and verified feasible.
-		cpgCache.lastScheduledPlacement = pCandidate.Name
-		bestResult := pLastResult
-		if utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup) {
-			var err error
-			revertFns, err = sched.assumeSubtreeWithRevert(ctx, schedFwk, podGroupInfo, map[fwk.EntityKey]*podGroupAlgorithmResult{podGroupInfo.GetKey(): bestResult})
-			if err != nil {
-				return &podGroupAlgorithmResult{
-					podGroupInfo: podGroupInfo,
-					status:       fwk.AsStatus(fmt.Errorf("failed to assume the subtree: %w", err)),
-				}, nil
-			}
-			return bestResult, revertFns
-		}
-		return bestResult, nil
-	}
-
-	var pCandidateResult *podGroupAlgorithmResult
 	if pCandidate != nil {
-		pCandidateResult = sched.evaluatePlacement(ctx, schedFwk, podGroupCycleState, podGroupInfo, queuedPodGroupInfo, pCandidate)
+		if bestResult, alreadyEvaluated := evaluatedResults[pCandidate]; alreadyEvaluated {
+			// pCandidate was already evaluated among the overlapping placements and verified feasible.
+			cpgCache.lastScheduledPlacement = pCandidate.Name
+			if utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup) {
+				var err error
+				revertFns, err = sched.assumeSubtreeWithRevert(ctx, schedFwk, podGroupInfo, map[fwk.EntityKey]*podGroupAlgorithmResult{podGroupInfo.GetKey(): bestResult})
+				if err != nil {
+					return &podGroupAlgorithmResult{
+						podGroupInfo: podGroupInfo,
+						status:       fwk.AsStatus(fmt.Errorf("failed to assume the subtree: %w", err)),
+					}, nil
+				}
+				return bestResult, revertFns
+			}
+			return bestResult, nil
+		}
+
+		pCandidateResult := sched.evaluatePlacement(ctx, schedFwk, podGroupCycleState, podGroupInfo, queuedPodGroupInfo, pCandidate)
 		if pCandidateResult.status.IsError() {
 			return pCandidateResult, nil
 		}
@@ -1871,51 +1876,61 @@ func (sched *Scheduler) compositePodGroupSchedulingPlacementAlgorithmWithCache(
 	}
 
 	var (
-		pLast        *fwk.Placement
-		pLastResult  *podGroupAlgorithmResult
-		pLastSubtree map[fwk.EntityKey]*podGroupAlgorithmResult
+		pLast             *fwk.Placement
+		evaluatedResults  map[*fwk.Placement]*podGroupAlgorithmResult
+		evaluatedSubtrees map[*fwk.Placement]map[fwk.EntityKey]*podGroupAlgorithmResult
 	)
 	if cpgCache.lastScheduledPlacement != "" {
 		pLast = placementByName[cpgCache.lastScheduledPlacement]
 	}
 
 	if pLast != nil {
-		pLastResult, pLastSubtree = sched.evaluateCompositePlacement(ctx, schedFwk, podGroupCycleState, root, podGroupInfo, pLast)
-		if pLastResult.status.IsError() {
-			maps.Copy(results, pLastSubtree)
-			return pLastResult, nil
-		}
-		if pLastResult.status.IsSuccess() {
-			cpgCache.feasiblePlacements[pLast.Name] = true
-			pLastAssignments := &fwk.PodGroupAssignments{
-				Placement:           pLast,
-				ProposedAssignments: makeCompositeProposedAssignments(podGroupInfo, pLastSubtree),
+		overlapping := findOverlappingFeasiblePlacements(pLast, placements, cpgCache)
+		evaluatedResults = make(map[*fwk.Placement]*podGroupAlgorithmResult, len(overlapping))
+		evaluatedSubtrees = make(map[*fwk.Placement]map[fwk.EntityKey]*podGroupAlgorithmResult, len(overlapping))
+		for _, p := range overlapping {
+			res, subtree := sched.evaluateCompositePlacement(ctx, schedFwk, podGroupCycleState, root, podGroupInfo, p)
+			if res.status.IsError() {
+				maps.Copy(results, subtree)
+				return res, nil
 			}
-			sched.recalculateCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache, pLastAssignments, pLastResult.placementCycleState)
-		} else {
-			invalidateCachedPlacement(cpgCache, pLast.Name)
+			if res.status.IsSuccess() {
+				evaluatedResults[p] = res
+				evaluatedSubtrees[p] = subtree
+				cpgCache.feasiblePlacements[p.Name] = true
+				pAssignments := &fwk.PodGroupAssignments{
+					Placement:           p,
+					ProposedAssignments: makeCompositeProposedAssignments(podGroupInfo, subtree),
+				}
+				sched.updateCachedRawScore(ctx, schedFwk, podGroupInfo, cpgCache, pAssignments, res.placementCycleState)
+			} else {
+				invalidateCachedPlacement(cpgCache, p.Name)
+			}
+		}
+		if len(overlapping) > 0 {
 			sched.renormalizeCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
 		}
 	}
 
 	pCandidate := selectBestCachedPlacement(cpgCache, placementByName)
 
-	if pCandidate != nil && pLast != nil && pCandidate == pLast {
-		// pLast is the top-scoring candidate and was already evaluated and verified feasible.
-		cpgCache.lastScheduledPlacement = pCandidate.Name
-		var err error
-		revertFns, err = sched.assumeSubtreeWithRevert(ctx, schedFwk, podGroupInfo, pLastSubtree)
-		if err != nil {
-			return &podGroupAlgorithmResult{
-				podGroupInfo: podGroupInfo,
-				status:       fwk.AsStatus(fmt.Errorf("failed to assume the subtree: %w", err)),
-			}, nil
-		}
-		maps.Copy(results, pLastSubtree)
-		return pLastResult, revertFns
-	}
-
 	if pCandidate != nil {
+		if bestResult, alreadyEvaluated := evaluatedResults[pCandidate]; alreadyEvaluated {
+			// pCandidate was already evaluated among the overlapping placements and verified feasible.
+			bestSubtree := evaluatedSubtrees[pCandidate]
+			cpgCache.lastScheduledPlacement = pCandidate.Name
+			var err error
+			revertFns, err = sched.assumeSubtreeWithRevert(ctx, schedFwk, podGroupInfo, bestSubtree)
+			if err != nil {
+				return &podGroupAlgorithmResult{
+					podGroupInfo: podGroupInfo,
+					status:       fwk.AsStatus(fmt.Errorf("failed to assume the subtree: %w", err)),
+				}, nil
+			}
+			maps.Copy(results, bestSubtree)
+			return bestResult, revertFns
+		}
+
 		pCandidateResult, pCandidateSubtree := sched.evaluateCompositePlacement(ctx, schedFwk, podGroupCycleState, root, podGroupInfo, pCandidate)
 		if pCandidateResult.status.IsError() {
 			maps.Copy(results, pCandidateSubtree)
@@ -1940,6 +1955,35 @@ func (sched *Scheduler) compositePodGroupSchedulingPlacementAlgorithmWithCache(
 	// Validation failed or no candidate found in cache: fallback to standard algorithm.
 	cpgCache.isPopulated = false
 	return sched.compositePodGroupSchedulingPlacementAlgorithm(ctx, schedFwk, podGroupCycleState, root, podGroupInfo, results)
+}
+
+// findOverlappingFeasiblePlacements returns all placements from the given list that are
+// currently marked feasible in cpgCache and share at least one node with pLast (including pLast itself).
+func findOverlappingFeasiblePlacements(pLast *fwk.Placement, placements []*fwk.Placement, cpgCache *cpgChildrenPlacementCache) []*fwk.Placement {
+	lastNodes := make(map[string]struct{}, len(pLast.Nodes))
+	for _, n := range pLast.Nodes {
+		lastNodes[n.Node().Name] = struct{}{}
+	}
+
+	var overlapping []*fwk.Placement
+	for _, p := range placements {
+		if !cpgCache.feasiblePlacements[p.Name] && p != pLast {
+			continue
+		}
+		if p == pLast || placementOverlapsNodes(p, lastNodes) {
+			overlapping = append(overlapping, p)
+		}
+	}
+	return overlapping
+}
+
+func placementOverlapsNodes(p *fwk.Placement, nodeNames map[string]struct{}) bool {
+	for _, n := range p.Nodes {
+		if _, ok := nodeNames[n.Node().Name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func selectBestCachedPlacement(cpgCache *cpgChildrenPlacementCache, placementByName map[string]*fwk.Placement) *fwk.Placement {
@@ -1970,26 +2014,24 @@ func invalidateCachedPlacement(cpgCache *cpgChildrenPlacementCache, name string)
 	delete(cpgCache.placementScores, name)
 }
 
-// recalculateCachedScores runs raw PlacementScore plugins only on the newly evaluated placement
-// and re-normalizes scores across all cached feasible placements.
-func (sched *Scheduler) recalculateCachedScores(
+// updateCachedRawScore runs raw PlacementScore plugins for a newly evaluated placement
+// and updates its RawScores in cpgCache.
+func (sched *Scheduler) updateCachedRawScore(
 	ctx context.Context,
 	schedFwk framework.Framework,
-	podGroupCycleState fwk.PodGroupCycleState,
 	podGroupInfo *framework.PodGroupInfo,
 	cpgCache *cpgChildrenPlacementCache,
-	pLastAssignments *fwk.PodGroupAssignments,
-	pLastState fwk.PlacementCycleState,
+	pAssignments *fwk.PodGroupAssignments,
+	pState fwk.PlacementCycleState,
 ) {
-	rawScores, status := schedFwk.RunRawPlacementScorePlugins(ctx, pLastState, podGroupInfo, pLastAssignments)
+	rawScores, status := schedFwk.RunRawPlacementScorePlugins(ctx, pState, podGroupInfo, pAssignments)
 	if !status.IsSuccess() {
 		return
 	}
-	cpgCache.placementScores[pLastAssignments.Placement.Name] = fwk.PlacementPluginScores{
-		Placement: pLastAssignments.Placement,
+	cpgCache.placementScores[pAssignments.Placement.Name] = fwk.PlacementPluginScores{
+		Placement: pAssignments.Placement,
 		RawScores: rawScores,
 	}
-	sched.renormalizeCachedScores(ctx, schedFwk, podGroupCycleState, podGroupInfo, cpgCache)
 }
 
 // renormalizeCachedScores runs NormalizePlacementScores across all cached feasible placements
