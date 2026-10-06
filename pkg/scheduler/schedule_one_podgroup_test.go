@@ -6519,7 +6519,7 @@ func TestScorePlacementPodGroupAssignments(t *testing.T) {
 				successfulResults[placement] = entityMap
 			}
 
-			_, status := sched.findBestCompositePodGroupPlacement(ctx, schedFwk, framework.NewCycleState(), root, successfulResults)
+			_, _, status := sched.findBestCompositePodGroupPlacement(ctx, schedFwk, framework.NewCycleState(), root, successfulResults)
 			if !status.IsSuccess() {
 				t.Fatalf("Expected findBestCompositePodGroupPlacement to succeed, got status: %v", status)
 			}

@@ -1426,8 +1426,8 @@ func TestSelectBestCachedPlacement_RandomizerTieBreaker(t *testing.T) {
 		},
 	}
 
-	got := selectBestCachedPlacement(cpgCache, placementByName)
+	got := cpgCache.selectBestPlacement(placementByName)
 	if got != p2 {
-		t.Errorf("selectBestCachedPlacement() = %v, want placement2 (higher Randomizer)", got)
+		t.Errorf("cpgCache.selectBestPlacement() = %v, want placement2 (higher Randomizer)", got)
 	}
 }
