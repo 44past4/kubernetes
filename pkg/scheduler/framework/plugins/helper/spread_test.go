@@ -27,9 +27,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	"k8s.io/utils/ptr"
 )
 
 func TestGetPodServices(t *testing.T) {
@@ -265,6 +267,66 @@ func TestDefaultSelector(t *testing.T) {
 				t.Errorf("Unexpected services (-want, +got):\n%s", diff)
 			}
 
+		})
+	}
+}
+
+func TestHasDefaultConstraintsOwnerKind(t *testing.T) {
+	tests := []struct {
+		name string
+		pod  *v1.Pod
+		want bool
+	}{
+		{
+			name: "pod with no owner",
+			pod:  st.MakePod().Name("p1").Obj(),
+			want: false,
+		},
+		{
+			name: "pod with ReplicationController owner",
+			pod:  st.MakePod().Name("p2").OwnerReference("rc1", v1.SchemeGroupVersion.WithKind("ReplicationController")).Obj(),
+			want: true,
+		},
+		{
+			name: "pod with ReplicaSet owner",
+			pod:  st.MakePod().Name("p3").OwnerReference("rs1", appsv1.SchemeGroupVersion.WithKind("ReplicaSet")).Obj(),
+			want: true,
+		},
+		{
+			name: "pod with StatefulSet owner",
+			pod:  st.MakePod().Name("p4").OwnerReference("ss1", appsv1.SchemeGroupVersion.WithKind("StatefulSet")).Obj(),
+			want: true,
+		},
+		{
+			name: "pod with Job owner",
+			pod:  st.MakePod().Name("p5").OwnerReference("job1", schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}).Obj(),
+			want: false,
+		},
+		{
+			name: "pod with non-controller OwnerReference",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p6",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       "rs2",
+							Controller: ptr.To(false),
+						},
+					},
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := HasDefaultConstraintsOwnerKind(tt.pod)
+			if got != tt.want {
+				t.Errorf("HasDefaultConstraintsOwnerKind() = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }

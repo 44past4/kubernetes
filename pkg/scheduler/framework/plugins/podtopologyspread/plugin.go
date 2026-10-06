@@ -89,13 +89,13 @@ func (pl *PodTopologySpread) Name() string {
 
 // Pod topology spread is not localized to a pod and node, so we cannot
 // sign pods that have topology spread constraints, either explicit or
-// defaulted.
+// defaulted for supported controller owners.
 func (pl *PodTopologySpread) SignPod(ctx context.Context, pod *v1.Pod) ([]fwk.SignFragment, *fwk.Status) {
 	if len(pod.Spec.TopologySpreadConstraints) > 0 {
 		return nil, fwk.NewStatus(fwk.Unschedulable, "pods with topology constraints are not signable")
 	}
 
-	if len(pl.defaultConstraints) > 0 {
+	if len(pl.defaultConstraints) > 0 && hasDefaultConstraintsOwnerKind(pod) {
 		return nil, fwk.NewStatus(fwk.Unschedulable, "pods with default topology constraints are not signable")
 	}
 

@@ -23,10 +23,12 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2/ktesting"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
@@ -3575,14 +3577,46 @@ func TestPodTopoSignatures(t *testing.T) {
 			scheduleable: false,
 		},
 		{
-			name: "pod no constraints but default",
+			name: "pod no constraints but default and no owner",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{},
 			},
 			config: config.PodTopologySpreadArgs{
 				DefaultingType: "System",
 			},
+			scheduleable: true,
+		},
+		{
+			name: "pod no constraints but default with ReplicaSet owner",
+			pod:  st.MakePod().OwnerReference("rs", appsv1.SchemeGroupVersion.WithKind("ReplicaSet")).Obj(),
+			config: config.PodTopologySpreadArgs{
+				DefaultingType: "System",
+			},
 			scheduleable: false,
+		},
+		{
+			name: "pod no constraints but default with ReplicationController owner",
+			pod:  st.MakePod().OwnerReference("rc", v1.SchemeGroupVersion.WithKind("ReplicationController")).Obj(),
+			config: config.PodTopologySpreadArgs{
+				DefaultingType: "System",
+			},
+			scheduleable: false,
+		},
+		{
+			name: "pod no constraints but default with StatefulSet owner",
+			pod:  st.MakePod().OwnerReference("ss", appsv1.SchemeGroupVersion.WithKind("StatefulSet")).Obj(),
+			config: config.PodTopologySpreadArgs{
+				DefaultingType: "System",
+			},
+			scheduleable: false,
+		},
+		{
+			name: "pod no constraints but default with Job owner",
+			pod:  st.MakePod().OwnerReference("job", schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}).Obj(),
+			config: config.PodTopologySpreadArgs{
+				DefaultingType: "System",
+			},
+			scheduleable: true,
 		},
 		{
 			name: "pod no constraints no default",

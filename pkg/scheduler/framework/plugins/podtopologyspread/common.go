@@ -56,6 +56,12 @@ func (tsc *topologySpreadConstraint) matchNodeInclusionPolicies(logger klog.Logg
 	return true
 }
 
+// hasDefaultConstraintsOwnerKind returns true if the pod has a controller owner of a kind
+// that supports default topology spread constraints (ReplicationController, ReplicaSet, StatefulSet).
+func hasDefaultConstraintsOwnerKind(pod *v1.Pod) bool {
+	return helper.HasDefaultConstraintsOwnerKind(pod)
+}
+
 // buildDefaultConstraints builds the constraints for a pod using
 // .DefaultConstraints and the selectors from the services, replication
 // controllers, replica sets and stateful sets that match the pod.

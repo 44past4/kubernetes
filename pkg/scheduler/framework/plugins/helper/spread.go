@@ -32,6 +32,23 @@ var (
 	ssKind = appsv1.SchemeGroupVersion.WithKind("StatefulSet")
 )
 
+// HasDefaultConstraintsOwnerKind returns true if the pod has a controller owner of a kind
+// that supports default topology spread constraints (ReplicationController, ReplicaSet, StatefulSet).
+func HasDefaultConstraintsOwnerKind(pod *v1.Pod) bool {
+	owner := metav1.GetControllerOfNoCopy(pod)
+	if owner == nil {
+		return false
+	}
+
+	gv, err := schema.ParseGroupVersion(owner.APIVersion)
+	if err != nil {
+		return false
+	}
+
+	gvk := gv.WithKind(owner.Kind)
+	return gvk == rcKind || gvk == rsKind || gvk == ssKind
+}
+
 // DefaultSelector returns a selector deduced from the Services, Replication
 // Controllers, Replica Sets, and Stateful Sets matching the given pod.
 func DefaultSelector(
