@@ -560,7 +560,7 @@
       childrenPodGroupsPerCPG: 2
       minCount: 3
       podsPerGroup: 3
-  - name: 12Nodes_2Zones_6Racks_2Trees_2Level_4PodGroups_12Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 12Nodes_2Zones_6Racks_2Trees_2Level_4PodGroups_12Pods_OpportunisticBatchingDisabled
     labels: [integration-test, short]
     params:
       initNodes: 12
@@ -571,7 +571,7 @@
       minCount: 3
       podsPerGroup: 3
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_4000Pods
     labels: [performance]
     params:
@@ -582,7 +582,7 @@
       childrenPodGroupsPerCPG: 4
       minCount: 500
       podsPerGroup: 500
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_4000Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_4000Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -593,7 +593,7 @@
       minCount: 500
       podsPerGroup: 500
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_6000Pods
     labels: [performance]
     params:
@@ -604,7 +604,7 @@
       childrenPodGroupsPerCPG: 4
       minCount: 750
       podsPerGroup: 750
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_6000Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_6000Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -615,7 +615,7 @@
       minCount: 750
       podsPerGroup: 750
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_8000Pods
     labels: [performance]
     params:
@@ -626,7 +626,7 @@
       childrenPodGroupsPerCPG: 4
       minCount: 1000
       podsPerGroup: 1000
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_8000Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_8PodGroups_8000Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -637,7 +637,7 @@
       minCount: 1000
       podsPerGroup: 1000
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_64PodGroups_6400Pods
     labels: [performance]
     params:
@@ -648,7 +648,7 @@
       childrenPodGroupsPerCPG: 32
       minCount: 100
       podsPerGroup: 100
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_64PodGroups_6400Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_64PodGroups_6400Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -659,7 +659,7 @@
       minCount: 100
       podsPerGroup: 100
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_128PodGroups_12800Pods
     labels: [performance]
     params:
@@ -670,7 +670,7 @@
       childrenPodGroupsPerCPG: 64
       minCount: 100
       podsPerGroup: 100
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_128PodGroups_12800Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_128PodGroups_12800Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -681,7 +681,7 @@
       minCount: 100
       podsPerGroup: 100
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods
     labels: [performance]
     params:
@@ -692,7 +692,7 @@
       childrenPodGroupsPerCPG: 128
       minCount: 100
       podsPerGroup: 100
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -703,7 +703,7 @@
       minCount: 100
       podsPerGroup: 100
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_NoCPGTAS
     labels: [performance]
     params:
@@ -715,7 +715,7 @@
       minCount: 100
       podsPerGroup: 100
       cpgTopologyKey: ""
-  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_NoCPGTAS_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_2Level_256PodGroups_25600Pods_NoCPGTAS_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -727,7 +727,7 @@
       podsPerGroup: 100
       cpgTopologyKey: ""
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
 
 # 3LevelCompositePodGroupsScheduling benchmarks scheduling throughput for 3-level CompositePodGroup hierarchies.
 # These typically represent JobSets.
@@ -1017,7 +1017,7 @@
       childrenPodGroupsPerCPG: 2
       minCount: 3
       podsPerGroup: 3
-  - name: 12Nodes_2Zones_6Racks_2Trees_3Level_8PodGroups_24Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 12Nodes_2Zones_6Racks_2Trees_3Level_8PodGroups_24Pods_OpportunisticBatchingDisabled
     labels: [integration-test, short]
     params:
       initNodes: 12
@@ -1029,7 +1029,7 @@
       minCount: 3
       podsPerGroup: 3
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_64PodGroups_6400Pods
     labels: [performance]
     params:
@@ -1041,7 +1041,7 @@
       childrenPodGroupsPerCPG: 8
       minCount: 100
       podsPerGroup: 100
-  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_64PodGroups_6400Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_64PodGroups_6400Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -1053,7 +1053,7 @@
       minCount: 100
       podsPerGroup: 100
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false
   - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_256PodGroups_25600Pods
     labels: [performance]
     params:
@@ -1065,7 +1065,7 @@
       childrenPodGroupsPerCPG: 16
       minCount: 100
       podsPerGroup: 100
-  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_256PodGroups_25600Pods_TopologyAwareCompositePodGroupOptimizationEnabled
+  - name: 5000Nodes_5Zones_50Racks_2Trees_3Level_256PodGroups_25600Pods_OpportunisticBatchingDisabled
     labels: [performance]
     params:
       initNodes: 5000
@@ -1077,4 +1077,4 @@
       minCount: 100
       podsPerGroup: 100
     featureGates:
-      TopologyAwareCompositePodGroupOptimization: true
+      OpportunisticBatching: false

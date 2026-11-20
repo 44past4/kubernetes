@@ -1031,7 +1031,7 @@ func (pgqi *QueuedPodGroupInfo) Update(pod *v1.Pod) (*QueuedPodInfo, error) {
 		if pInfo.Pod.Name != pod.Name || pInfo.Pod.Namespace != pod.Namespace {
 			continue
 		}
-		err := pInfo.PodInfo.Update(pod)
+		_, err := pInfo.Update(pod)
 
 		leafPG, _ := findTreeNodeAndParent(pgqi.PodGroupInfo, nil, key)
 		if leafPG != nil {

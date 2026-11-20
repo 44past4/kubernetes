@@ -4124,6 +4124,38 @@ func TestQueuedPodInfo_UpdateInvalidatesSignature(t *testing.T) {
 	}
 }
 
+func TestQueuedPodGroupInfo_UpdateInvalidatesSignature(t *testing.T) {
+	pg := st.MakePodGroup().Name("pg1").Obj()
+	pod1 := st.MakePod().Name("pod1").PodGroupName("pg1").Label("version", "1").Obj()
+	pod2 := pod1.DeepCopy()
+	pod2.Labels["version"] = "2"
+
+	podInfo, err := NewPodInfo(pod1)
+	if err != nil {
+		t.Fatalf("NewPodInfo failed: %v", err)
+	}
+	queuedPodInfo := &QueuedPodInfo{
+		PodInfo:      podInfo,
+		PodSignature: fwk.PodSignature("sig-1"),
+	}
+	pgInfo := &PodGroupInfo{
+		GenericPodGroup: fwk.NewGenericPodGroup(pg),
+	}
+	qpgi := &QueuedPodGroupInfo{
+		PodGroupInfo: pgInfo,
+	}
+	qpgi.AddPod(queuedPodInfo)
+
+	updated, err := qpgi.Update(pod2)
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	if updated.PodSignature != nil {
+		t.Errorf("Expected signature to be nil after Update, got '%s'", string(updated.PodSignature))
+	}
+}
+
 func TestPodInfo_Update(t *testing.T) {
 	pod1 := st.MakePod().Name("pod1").UID("uid1").Obj()
 	pod2 := pod1.DeepCopy()

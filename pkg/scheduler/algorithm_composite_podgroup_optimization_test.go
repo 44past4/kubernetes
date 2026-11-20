@@ -58,10 +58,10 @@ import (
 func newSignTestFramework(t *testing.T, ignorePreferredTermsOfExistingPods bool) (context.Context, framework.Framework) {
 	t.Helper()
 	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
-		features.TopologyAwareWorkloadScheduling:            true,
-		features.GenericWorkload:                            true,
-		features.CompositePodGroup:                          true,
-		features.TopologyAwareCompositePodGroupOptimization: true,
+		features.TopologyAwareWorkloadScheduling: true,
+		features.GenericWorkload:                 true,
+		features.CompositePodGroup:               true,
+		features.OpportunisticBatching:           true,
 	})
 
 	_, ctx := ktesting.NewTestContext(t)
@@ -133,8 +133,10 @@ func TestAreChildPodGroupsIdentical(t *testing.T) {
 		}
 		var pods []*v1.Pod
 		for i := 0; i < numPods; i++ {
-			p := st.MakePod().Name(fmt.Sprintf("%s-pod-%d", name, i)).PodGroupName(name).Obj()
+			p := st.MakePod().Name(fmt.Sprintf("%s-pod-%d", name, i)).UID(fmt.Sprintf("%s-pod-%d", name, i)).PodGroupName(name).Obj()
+			schedulingGroup := p.Spec.SchedulingGroup
 			p.Spec = *spec.DeepCopy()
+			p.Spec.SchedulingGroup = schedulingGroup
 			pods = append(pods, p)
 		}
 		return &framework.PodGroupInfo{
@@ -413,7 +415,38 @@ func TestAreChildPodGroupsIdentical(t *testing.T) {
 				ignorePreferred = *tt.ignorePreferredTermsOfExistingPods
 			}
 			ctx, schedFwk := newSignTestFramework(t, ignorePreferred)
-			got := areChildPodGroupsIdentical(ctx, schedFwk, tt.children())
+			children := tt.children()
+
+			rootCPG := st.MakeCompositePodGroup().Name("root-cpg").Obj()
+			rootPGInfo := framework.NewPodGroupInfo(fwk.NewGenericCompositePodGroup(rootCPG), children...)
+			var queuedPods []*framework.QueuedPodInfo
+			var collectLeafPods func(pgi *framework.PodGroupInfo)
+			collectLeafPods = func(pgi *framework.PodGroupInfo) {
+				if pgi.GetType() == fwk.CompositePodGroupKeyType {
+					for _, ch := range pgi.Children() {
+						collectLeafPods(ch)
+					}
+					return
+				}
+				pods := pgi.UnscheduledPods
+				pgi.UnscheduledPods = nil
+				for _, p := range pods {
+					pInfo, err := framework.NewPodInfo(p)
+					if err != nil {
+						t.Fatalf("NewPodInfo(%s): %v", p.Name, err)
+					}
+					queuedPods = append(queuedPods, &framework.QueuedPodInfo{
+						PodInfo:      pInfo,
+						PodSignature: schedFwk.SignPod(ctx, p),
+					})
+				}
+			}
+			for _, ch := range children {
+				collectLeafPods(ch)
+			}
+			root := newQueuedPodGroupInfo(rootPGInfo, queuedPods...)
+
+			got := areChildPodGroupsIdentical(root, children)
 			if got != tt.want {
 				t.Errorf("areChildPodGroupsIdentical() = %v, want %v", got, tt.want)
 			}
@@ -489,6 +522,7 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 	type testCase struct {
 		name                   string
 		enableFeatureGate      bool
+		disableBatching        bool
 		numChildren            int
 		nonIdenticalChildren   bool
 		nonIdenticalChildIndex int
@@ -780,6 +814,21 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 			},
 		},
 		{
+			name:              "Batching disabled on framework (e.g. PodGroupPostFilter) - cache bypassed",
+			enableFeatureGate: true,
+			disableBatching:   true,
+			numChildren:       2,
+			podPerNode:        true,
+			expectedHosts: map[string]string{
+				"p1": "node1",
+				"p2": "node2",
+			},
+			expectedMaxEvaluations: map[string]int{
+				"p1": 4,
+				"p2": 4, // when batching is disabled on framework, child 2 evaluates all placements
+			},
+		},
+		{
 			name:                 "Non-identical children - optimization disabled",
 			enableFeatureGate:    true,
 			numChildren:          2,
@@ -816,10 +865,10 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
-				features.TopologyAwareWorkloadScheduling:            true,
-				features.GenericWorkload:                            true,
-				features.CompositePodGroup:                          true,
-				features.TopologyAwareCompositePodGroupOptimization: tt.enableFeatureGate,
+				features.TopologyAwareWorkloadScheduling: true,
+				features.GenericWorkload:                 true,
+				features.CompositePodGroup:               true,
+				features.OpportunisticBatching:           tt.enableFeatureGate,
 			})
 
 			logger, ctx := ktesting.NewTestContext(t)
@@ -972,6 +1021,13 @@ func TestCPGPlacementOptimization_CacheAndEvaluationCount(t *testing.T) {
 
 			if err := cache.UpdateSnapshot(logger, snapshot); err != nil {
 				t.Fatalf("Failed to update snapshot: %v", err)
+			}
+
+			for _, qpInfo := range queuedPodInfos {
+				qpInfo.PodSignature = schedFwk.SignPod(ctx, qpInfo.Pod)
+			}
+			if tt.disableBatching {
+				schedFwk.SetBatchingDisabled(true)
 			}
 
 			cpgInfo := newQueuedPodGroupInfo(rootPGInfo, queuedPodInfos...)
@@ -1127,10 +1183,10 @@ func TestCPGPlacementOptimization_ThreeLevelCompositeChildrenCache(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
-				features.TopologyAwareWorkloadScheduling:            true,
-				features.GenericWorkload:                            true,
-				features.CompositePodGroup:                          true,
-				features.TopologyAwareCompositePodGroupOptimization: tt.enableFeatureGate,
+				features.TopologyAwareWorkloadScheduling: true,
+				features.GenericWorkload:                 true,
+				features.CompositePodGroup:               true,
+				features.OpportunisticBatching:           tt.enableFeatureGate,
 			})
 
 			logger, ctx := ktesting.NewTestContext(t)
@@ -1308,6 +1364,10 @@ func TestCPGPlacementOptimization_ThreeLevelCompositeChildrenCache(t *testing.T)
 				t.Fatalf("Failed to update snapshot: %v", err)
 			}
 
+			for _, qpInfo := range queuedPodInfos {
+				qpInfo.PodSignature = schedFwk.SignPod(ctx, qpInfo.Pod)
+			}
+
 			cpgInfo := newQueuedPodGroupInfo(rootPGInfo, queuedPodInfos...)
 			results := podGroupAlg.RunRootSchedulingAlgorithm(ctx, schedFwk, framework.NewCycleState(), cpgInfo)
 
@@ -1336,14 +1396,12 @@ func TestCPGPlacementOptimization_ThreeLevelCompositeChildrenCache(t *testing.T)
 	}
 }
 
-func TestGetOrComputePodGroupSignature_ReusesQueuedPodSignature(t *testing.T) {
-	ctx, schedFwk := newSignTestFramework(t, true)
-
+func TestGetPodGroupSignature_ReusesQueuedPodSignature(t *testing.T) {
 	pg := st.MakePodGroup().Name("pg1").Obj()
 	p1 := st.MakePod().Name("p1").UID("p1").PodGroupName("pg1").Obj()
 	p2 := st.MakePod().Name("p2").UID("p2").PodGroupName("pg1").Obj()
-	// Give p2 a different spec (e.g. NodeSelector) so SignPod would fail if called,
-	// proving that precomputed PodSignatures on QueuedPodInfo are reused instead of re-signing.
+	// Give p2 a different spec (e.g. NodeSelector) so SignPod would produce a different signature,
+	// proving that precomputed PodSignatures on QueuedPodInfo are reused directly without re-signing.
 	p2.Spec.NodeSelector = map[string]string{"zone": "different"}
 
 	pInfo1, err := framework.NewPodInfo(p1)
@@ -1365,12 +1423,25 @@ func TestGetOrComputePodGroupSignature_ReusesQueuedPodSignature(t *testing.T) {
 	root := newQueuedPodGroupInfo(pgInfo, qp1, qp2)
 
 	sigCache := make(map[*framework.PodGroupInfo]fwk.PodSignature)
-	sig, ok := getOrComputePodGroupSignature(ctx, schedFwk, root, pgInfo, sigCache)
+	sig, ok := getPodGroupSignature(root, pgInfo, sigCache)
 	if !ok {
-		t.Fatalf("getOrComputePodGroupSignature() returned ok=false, want true when precomputed PodSignatures match")
+		t.Fatalf("getPodGroupSignature() returned ok=false, want true when precomputed PodSignatures match")
 	}
 	if string(sig) != string(precomputedSig) {
-		t.Errorf("getOrComputePodGroupSignature() = %q, want %q", string(sig), string(precomputedSig))
+		t.Errorf("getPodGroupSignature() = %q, want %q", string(sig), string(precomputedSig))
+	}
+
+	// Missing (nil) precomputed PodSignature must return ok=false without falling back to SignPod.
+	qp2.PodSignature = nil
+	sigCache = make(map[*framework.PodGroupInfo]fwk.PodSignature)
+	if sig, ok := getPodGroupSignature(root, pgInfo, sigCache); ok || sig != nil {
+		t.Errorf("getPodGroupSignature() with nil PodSignature = (%q, %v), want (nil, false)", string(sig), ok)
+	}
+
+	// Nil root must return ok=false.
+	sigCache = make(map[*framework.PodGroupInfo]fwk.PodSignature)
+	if sig, ok := getPodGroupSignature(nil, pgInfo, sigCache); ok || sig != nil {
+		t.Errorf("getPodGroupSignature() with nil root = (%q, %v), want (nil, false)", string(sig), ok)
 	}
 }
 

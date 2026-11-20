@@ -455,7 +455,7 @@ func (p *PodGroupSchedulingAlgorithm) podGroupSchedulingPlacementAlgorithm(ctx c
 	metrics.RecordGeneratedPlacements(schedFwk.ProfileName(), metrics.EntityTypeToLabel(podGroupInfo.GetType()), len(placements))
 
 	nominated := nominatedPlacement(ctx, placements, podGroupInfo)
-	cpgCache := prepareCPGChildrenPlacementCache(ctx, schedFwk, podGroupCycleState, queuedPodGroupInfo, podGroupInfo)
+	cpgCache := prepareCPGChildrenPlacementCache(schedFwk, podGroupCycleState, queuedPodGroupInfo, podGroupInfo)
 	if nominated != nil {
 		cpgCache.reset()
 	} else if res, ok := p.schedulePodGroupPlacementWithCache(ctx, schedFwk, podGroupCycleState, podGroupInfo, queuedPodGroupInfo, placements, cpgCache); ok {
@@ -588,7 +588,7 @@ func (p *PodGroupSchedulingAlgorithm) compositePodGroupSchedulingPlacementAlgori
 	metrics.RecordGeneratedPlacements(schedFwk.ProfileName(), metrics.EntityTypeToLabel(podGroupInfo.GetType()), len(placements))
 
 	nominated := nominatedPlacement(ctx, placements, podGroupInfo)
-	cpgCache := prepareCPGChildrenPlacementCache(ctx, schedFwk, podGroupCycleState, root, podGroupInfo)
+	cpgCache := prepareCPGChildrenPlacementCache(schedFwk, podGroupCycleState, root, podGroupInfo)
 	if nominated != nil {
 		cpgCache.reset()
 	} else if res, ok := p.scheduleCompositePlacementWithCache(ctx, schedFwk, podGroupCycleState, root, podGroupInfo, results, placements, cpgCache); ok {
@@ -1053,7 +1053,7 @@ func (p *PodGroupSchedulingAlgorithm) compositePodGroupSchedulingDefaultAlgorith
 		}
 	}
 
-	initCPGChildrenPlacementCache(placementCycleState, len(podGroupInfo.Children()))
+	initCPGChildrenPlacementCache(schedFwk, placementCycleState, len(podGroupInfo.Children()))
 
 	anyScheduled := false
 	for i, childPGInfo := range podGroupInfo.Children() {
@@ -1181,8 +1181,14 @@ type cpgChildrenPlacementCache struct {
 	placementScores        map[string]fwk.PlacementPluginScores
 }
 
-func initCPGChildrenPlacementCache(placementCycleState *framework.CycleState, numChildren int) {
-	if !utilfeature.DefaultFeatureGate.Enabled(features.TopologyAwareCompositePodGroupOptimization) || numChildren < 2 {
+func isCPGPlacementBatchingEnabled(schedFwk framework.Framework) bool {
+	return utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup) &&
+		utilfeature.DefaultFeatureGate.Enabled(features.OpportunisticBatching) &&
+		schedFwk != nil && !schedFwk.IsBatchingDisabled()
+}
+
+func initCPGChildrenPlacementCache(schedFwk framework.Framework, placementCycleState *framework.CycleState, numChildren int) {
+	if !isCPGPlacementBatchingEnabled(schedFwk) || numChildren < 2 {
 		return
 	}
 	placementCycleState.Write(cpgChildrenPlacementCacheKey, &cpgChildrenPlacementCache{
@@ -1193,13 +1199,12 @@ func initCPGChildrenPlacementCache(placementCycleState *framework.CycleState, nu
 }
 
 func prepareCPGChildrenPlacementCache(
-	ctx context.Context,
 	schedFwk framework.Framework,
 	podGroupCycleState *framework.CycleState,
 	root *framework.QueuedPodGroupInfo,
 	child *framework.PodGroupInfo,
 ) *cpgChildrenPlacementCache {
-	if !utilfeature.DefaultFeatureGate.Enabled(features.TopologyAwareCompositePodGroupOptimization) {
+	if !isCPGPlacementBatchingEnabled(schedFwk) {
 		return nil
 	}
 	pcs := podGroupCycleState.GetPlacementCycleState()
@@ -1214,7 +1219,7 @@ func prepareCPGChildrenPlacementCache(
 	if !ok || c == nil {
 		return nil
 	}
-	if c.isPopulated && !arePodGroupsIdenticalWithRoot(ctx, schedFwk, root, c.lastChild, child, c.sigCache) {
+	if c.isPopulated && !arePodGroupsIdenticalWithRoot(root, c.lastChild, child, c.sigCache) {
 		c.reset()
 	}
 	return c
@@ -1590,20 +1595,20 @@ func (p *PodGroupSchedulingAlgorithm) schedulePlacementWithCache(
 
 // areChildPodGroupsIdentical checks whether all child pod groups in a composite pod group
 // have identical structure, scheduling policies, constraints, claims, and compatible pod signatures.
-func areChildPodGroupsIdentical(ctx context.Context, schedFwk framework.Framework, children []*framework.PodGroupInfo) bool {
+func areChildPodGroupsIdentical(root *framework.QueuedPodGroupInfo, children []*framework.PodGroupInfo) bool {
 	if len(children) < 2 {
 		return false
 	}
 	sigCache := make(map[*framework.PodGroupInfo]fwk.PodSignature)
 	for i := 1; i < len(children); i++ {
-		if !arePodGroupsIdenticalWithRoot(ctx, schedFwk, nil, children[0], children[i], sigCache) {
+		if !arePodGroupsIdenticalWithRoot(root, children[0], children[i], sigCache) {
 			return false
 		}
 	}
 	return true
 }
 
-func arePodGroupsIdenticalWithRoot(ctx context.Context, schedFwk framework.Framework, root *framework.QueuedPodGroupInfo, a, b *framework.PodGroupInfo, sigCache map[*framework.PodGroupInfo]fwk.PodSignature) bool {
+func arePodGroupsIdenticalWithRoot(root *framework.QueuedPodGroupInfo, a, b *framework.PodGroupInfo, sigCache map[*framework.PodGroupInfo]fwk.PodSignature) bool {
 	if a == nil || b == nil || a.GetType() != b.GetType() {
 		return false
 	}
@@ -1624,11 +1629,11 @@ func arePodGroupsIdenticalWithRoot(ctx context.Context, schedFwk framework.Frame
 		if !equality.Semantic.DeepEqual(a.PodGroup.Spec.ResourceClaims, b.PodGroup.Spec.ResourceClaims) {
 			return false
 		}
-		sigA, okA := getOrComputePodGroupSignature(ctx, schedFwk, root, a, sigCache)
+		sigA, okA := getPodGroupSignature(root, a, sigCache)
 		if !okA {
 			return false
 		}
-		sigB, okB := getOrComputePodGroupSignature(ctx, schedFwk, root, b, sigCache)
+		sigB, okB := getPodGroupSignature(root, b, sigCache)
 		if !okB {
 			return false
 		}
@@ -1649,7 +1654,7 @@ func arePodGroupsIdenticalWithRoot(ctx context.Context, schedFwk framework.Frame
 			return false
 		}
 		for i := range aChildren {
-			if !arePodGroupsIdenticalWithRoot(ctx, schedFwk, root, aChildren[i], bChildren[i], sigCache) {
+			if !arePodGroupsIdenticalWithRoot(root, aChildren[i], bChildren[i], sigCache) {
 				return false
 			}
 		}
@@ -1659,44 +1664,37 @@ func arePodGroupsIdenticalWithRoot(ctx context.Context, schedFwk framework.Frame
 	}
 }
 
-// getOrComputePodGroupSignature verifies that all unscheduled pods within a leaf PodGroup
-// produce the same non-empty PodSignature and caches the result for reuse across comparisons.
-// When root is provided, precomputed PodSignatures on QueuedPodInfo are reused before calling SignPod.
-func getOrComputePodGroupSignature(ctx context.Context, schedFwk framework.Framework, root *framework.QueuedPodGroupInfo, pg *framework.PodGroupInfo, sigCache map[*framework.PodGroupInfo]fwk.PodSignature) (fwk.PodSignature, bool) {
-	if schedFwk == nil || pg == nil || pg.PodGroup == nil || pg.GetType() != fwk.PodGroupKeyType || len(pg.UnscheduledPods) == 0 {
+// getPodGroupSignature verifies that all unscheduled pods within a leaf PodGroup
+// share the same non-empty precomputed PodSignature on their QueuedPodInfo and
+// caches the result for reuse across comparisons.
+func getPodGroupSignature(root *framework.QueuedPodGroupInfo, pg *framework.PodGroupInfo, sigCache map[*framework.PodGroupInfo]fwk.PodSignature) (fwk.PodSignature, bool) {
+	if root == nil || pg == nil || pg.PodGroup == nil || pg.GetType() != fwk.PodGroupKeyType || len(pg.UnscheduledPods) == 0 {
 		return nil, false
 	}
 	if sig, cached := sigCache[pg]; cached {
 		return sig, len(sig) > 0
 	}
 
-	var queuedPods []*framework.QueuedPodInfo
-	if root != nil {
-		queuedPods = root.PodInfosForGroup(pg.GetKey())
+	queuedPods := root.PodInfosForGroup(pg.GetKey())
+	if len(queuedPods) != len(pg.UnscheduledPods) {
+		sigCache[pg] = nil
+		return nil, false
 	}
 
-	signPodAt := func(idx int, pod *v1.Pod) fwk.PodSignature {
-		if pod == nil {
+	podSigAt := func(idx int, pod *v1.Pod) fwk.PodSignature {
+		if pod == nil || queuedPods[idx] == nil || queuedPods[idx].Pod != pod {
 			return nil
 		}
-		if idx < len(queuedPods) && queuedPods[idx] != nil && queuedPods[idx].Pod == pod {
-			if len(queuedPods[idx].PodSignature) > 0 {
-				return queuedPods[idx].PodSignature
-			}
-			sig := schedFwk.SignPod(ctx, pod)
-			queuedPods[idx].PodSignature = sig
-			return sig
-		}
-		return schedFwk.SignPod(ctx, pod)
+		return queuedPods[idx].PodSignature
 	}
 
-	firstSig := signPodAt(0, pg.UnscheduledPods[0])
+	firstSig := podSigAt(0, pg.UnscheduledPods[0])
 	if len(firstSig) == 0 {
 		sigCache[pg] = nil
 		return nil, false
 	}
 	for i, pod := range pg.UnscheduledPods[1:] {
-		sig := signPodAt(i+1, pod)
+		sig := podSigAt(i+1, pod)
 		if len(sig) == 0 || !bytes.Equal(firstSig, sig) {
 			sigCache[pg] = nil
 			return nil, false

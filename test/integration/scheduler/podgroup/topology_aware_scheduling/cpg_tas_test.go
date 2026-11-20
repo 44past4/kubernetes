@@ -3615,10 +3615,10 @@ func TestCPGTopologyAwareScheduling_Optimization(t *testing.T) {
 
 func runCPGOptimizedTestScenario(t *testing.T, tt scenario) {
 	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
-		features.CompositePodGroup:                          true,
-		features.GenericWorkload:                            true,
-		features.TopologyAwareWorkloadScheduling:            true,
-		features.TopologyAwareCompositePodGroupOptimization: true,
+		features.CompositePodGroup:               true,
+		features.GenericWorkload:                 true,
+		features.TopologyAwareWorkloadScheduling: true,
+		features.OpportunisticBatching:           true,
 	})
 
 	cfg := configtesting.V1ToInternalWithDefaults(t, configv1.KubeSchedulerConfiguration{
